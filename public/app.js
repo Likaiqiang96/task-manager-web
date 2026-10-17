@@ -15,6 +15,7 @@
   const state = {
     info: null,
     samples: [],
+    networkSeries: [],
     view: 'overview',
     diskName: null,
     diskSig: '',
@@ -465,6 +466,21 @@
     );
   }
 
+  function netTooltip(payload) {
+    if (!payload) return hideTooltip();
+    const down = payload.values[0];
+    const up = payload.values[1];
+    showTooltip(
+      timeLabel(payload.index),
+      [
+        { color: COLORS.read, label: '下载', value: down == null ? '—' : fmtRate(down) },
+        { color: COLORS.disk, label: '上传', value: up == null ? '—' : fmtRate(up) },
+      ],
+      payload.x,
+      payload.y
+    );
+  }
+
   /* ------------------------------------------------------------------ */
   /* 图表初始化                                                          */
   /* ------------------------------------------------------------------ */
@@ -479,6 +495,14 @@
       max: 100,
       grid: false,
       series: [{ color: COLORS.mem, fill: true }],
+    });
+    charts.sideNet = new Chart($('#sideNetChart'), {
+      minScale: 1024,
+      grid: false,
+      series: [
+        { color: COLORS.read, fill: true, width: 1.4 },
+        { color: COLORS.disk, fill: false, width: 1.2 },
+      ],
     });
 
     charts.ovCpu = new Chart($('#ovCpuChart'), {
@@ -500,6 +524,15 @@
       series: [
         { color: COLORS.disk, fill: true, width: 1.8 },
         { color: COLORS.read, fill: false, width: 1.3 },
+      ],
+    });
+    charts.ovNet = new Chart($('#ovNetChart'), {
+      minScale: 1024,
+      yLabels: true,
+      yFormat: (v) => fmtRate(v),
+      series: [
+        { color: COLORS.read, fill: true, width: 1.8 },
+        { color: COLORS.disk, fill: false, width: 1.3 },
       ],
     });
 
@@ -530,6 +563,24 @@
         { color: COLORS.read, fill: false, width: 1.3 },
       ],
     });
+    charts.net = new Chart($('#netChart'), {
+      minScale: 1024,
+      labels: true,
+      yFormat: (v) => fmtRate(v),
+      hover: true,
+      tooltip: netTooltip,
+      series: [
+        { color: COLORS.read, fill: true, width: 1.8 },
+        { color: COLORS.disk, fill: false, width: 1.3 },
+      ],
+    });
+    state.networkRow = {
+      el: $('#resNetwork'),
+      valEl: $('#resNetVal'),
+      subEl: $('#resNetSub'),
+    };
+    const netCard = $('#ovNetCard');
+    if (netCard) netCard.addEventListener('click', () => showView('network'));
   }
 
   /* ------------------------------------------------------------------ */
@@ -615,6 +666,7 @@
     if (view === 'overview') return [charts.ovCpu, charts.ovMem, charts.ovDisk];
     if (view === 'cpu') return [charts.cpu];
     if (view === 'mem') return [charts.mem];
+    if (view === 'network') return [charts.net];
     return [charts.disk];
   }
 
@@ -876,6 +928,52 @@
     setText('#stDiskLatency', `${diskData.latencyMs.toFixed(2)} ms`);
     setText('#stDiskIops', diskData.iops.toFixed(1));
     setText('#tblDiskState', diskData.busy > 1 ? '活动' : '空闲');
+
+    /* 网络 */
+    const netSummary = state.network && state.network.summary;
+    const netRecv = netSummary ? netSummary.recvBps || 0 : 0;
+    const netSend = netSummary ? netSummary.sendBps || 0 : 0;
+    const lastNet = state.networkSeries[state.networkSeries.length - 1];
+    if (!lastNet || lastNet.t !== last.t) {
+      state.networkSeries.push({ recv: netRecv, send: netSend, t: last.t });
+      if (state.networkSeries.length > WINDOW) state.networkSeries.shift();
+    }
+    const netRecvSeries = pad60(state.networkSeries.map((item) => item.recv));
+    const netSendSeries = pad60(state.networkSeries.map((item) => item.send));
+    if (charts.sideNet) charts.sideNet.setData([netRecvSeries, netSendSeries]);
+    if (charts.ovNet) charts.ovNet.setData([netRecvSeries, netSendSeries]);
+    if (charts.net) charts.net.setData([netRecvSeries, netSendSeries]);
+
+    setText('#ovNetDown', fmtRate(netRecv));
+    setText('#ovNetUp', fmtRate(netSend));
+    setText('#ovNetMeta', netSummary ? `${netSummary.total} 个连接` : '—');
+    setText('#ovNetConns', netSummary ? netSummary.total : '—');
+    setText('#ovNetTcp', netSummary ? netSummary.tcp : '—');
+    setText('#ovNetUdp', netSummary ? netSummary.udp : '—');
+    setText('#ovNetContainers', netSummary ? netSummary.containers : '—');
+
+    setText('#netDown', fmtRate(netRecv));
+    setText('#netUp', fmtRate(netSend));
+    setText(
+      '#netSub',
+      netSummary
+        ? `${netSummary.total} 个连接 · TCP ${netSummary.tcp} · UDP ${netSummary.udp} · 近 10 秒平均`
+        : '—'
+    );
+    setText('#stNetDown', fmtRate(netRecv));
+    setText('#stNetUp', fmtRate(netSend));
+    setText('#stNetTotal', netSummary ? netSummary.total : '—');
+    setText('#stNetInbound', netSummary ? netSummary.inbound : '—');
+    setText('#stNetOutbound', netSummary ? netSummary.outbound : '—');
+    setText('#stNetListening', netSummary ? netSummary.listening : '—');
+    setText('#stNetTcp', netSummary ? netSummary.tcp : '—');
+    setText('#stNetUdp', netSummary ? netSummary.udp : '—');
+    setText('#stNetContainers', netSummary ? netSummary.containers : '—');
+
+    if (state.networkRow) {
+      state.networkRow.valEl.textContent = `↓ ${fmtRate(netRecv)} · ↑ ${fmtRate(netSend)}`;
+      state.networkRow.subEl.textContent = netSummary ? `${netSummary.total} 个连接` : '—';
+    }
 
     /* 状态栏 */
     updateFooterBrief();
@@ -1403,6 +1501,7 @@ function setPage(page) {
       viewCharts(state.view).forEach((chart) => chart.resize());
       if (charts.sideCpu) charts.sideCpu.resize();
       if (charts.sideMem) charts.sideMem.resize();
+      if (charts.sideNet) charts.sideNet.resize();
       if (charts.sideDiskTotal) charts.sideDiskTotal.resize();
       for (const chart of diskCharts.values()) chart.resize();
       render();
@@ -2823,7 +2922,7 @@ async function loadProcesses() {
       const item = event.target.closest('.res-item');
       if (!item) return;
       const key = item.dataset.key;
-      if (key === 'overview' || key === 'cpu' || key === 'mem') {
+      if (key === 'overview' || key === 'cpu' || key === 'mem' || key === 'network') {
         showView(key);
         return;
       }

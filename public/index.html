@@ -54,6 +54,12 @@
       </button>
 
       <div id="diskItems"></div>
+
+      <button type="button" class="res-item" data-key="network" id="resNetwork">
+        <div class="res-top"><span class="res-name">网络</span><span class="res-val" id="resNetVal">--</span></div>
+        <div class="res-sub" id="resNetSub">--</div>
+        <div class="mini-chart"><canvas id="sideNetChart"></canvas></div>
+      </button>
     </aside>
 
     <main class="detail">
@@ -363,6 +369,25 @@
               <span>活动时间占比 <b id="ovDiskBusy">--</b></span>
             </footer>
           </article>
+
+          <article class="ov-card" id="ovNetCard" title="点击查看网络详情">
+            <header class="ov-head">
+              <span class="ov-title">网络</span>
+              <span class="ov-disk-dual">
+                <span class="ov-disk-item"><span class="ov-disk-label">下载</span><span class="ov-value" id="ovNetDown">--</span></span>
+                <span class="ov-disk-item"><span class="ov-disk-label">上传</span><span class="ov-value" id="ovNetUp">--</span></span>
+              </span>
+              <span class="ov-meta" id="ovNetMeta">--</span>
+              <span class="legend"><i class="dot read"></i>下载<i class="dot write"></i>上传</span>
+            </header>
+            <div class="ov-chart"><canvas id="ovNetChart"></canvas></div>
+            <footer class="ov-foot">
+              <span>连接 <b id="ovNetConns">--</b></span>
+              <span>TCP <b id="ovNetTcp">--</b></span>
+              <span>UDP <b id="ovNetUdp">--</b></span>
+              <span>容器 <b id="ovNetContainers">--</b></span>
+            </footer>
+          </article>
         </div>
       </section>
 
@@ -475,6 +500,46 @@
           <div><span>型号</span><b id="tblDiskModel">--</b></div>
           <div><span>类型</span><b id="tblDiskType">--</b></div>
           <div><span>状态</span><b id="tblDiskState">--</b></div>
+        </footer>
+      </section>
+
+      <!-- ============================= 网络 ============================= -->
+      <section class="view" data-view="network" hidden>
+        <header class="detail-head">
+          <div class="head-main">
+            <h1 class="detail-title">网络</h1>
+            <div class="big-line disk-big-line">
+              <span class="disk-big-item read"><span class="big-val" id="netDown">--</span><span class="big-cap">下载速度</span></span>
+              <span class="disk-big-item write"><span class="big-val" id="netUp">--</span><span class="big-cap">上传速度</span></span>
+            </div>
+            <div class="big-sub" id="netSub">—</div>
+          </div>
+          <div class="head-side legend"><i class="dot read"></i>下载<i class="dot write"></i>上传</div>
+        </header>
+
+        <div class="detail-body">
+          <div class="chart-panel">
+            <div class="chart-frame"><canvas id="netChart"></canvas></div>
+          </div>
+          <aside class="stats-panel">
+            <div class="stat-row"><span>下载速度</span><b id="stNetDown">--</b></div>
+            <div class="stat-row"><span>上传速度</span><b id="stNetUp">--</b></div>
+            <div class="stat-row"><span>连接数</span><b id="stNetTotal">--</b></div>
+            <div class="stat-row"><span>入站</span><b id="stNetInbound">--</b></div>
+            <div class="stat-row"><span>出站</span><b id="stNetOutbound">--</b></div>
+            <div class="stat-row"><span>监听</span><b id="stNetListening">--</b></div>
+            <div class="stat-sep"></div>
+            <div class="stat-row"><span>TCP</span><b id="stNetTcp">--</b></div>
+            <div class="stat-row"><span>UDP</span><b id="stNetUdp">--</b></div>
+            <div class="stat-row"><span>容器</span><b id="stNetContainers">--</b></div>
+          </aside>
+        </div>
+
+        <footer class="info-table">
+          <div><span>速率口径</span><b>近 10 秒平均</b></div>
+          <div><span>时间窗口</span><b>60 秒</b></div>
+          <div><span>下载</span><b>主机接收</b></div>
+          <div><span>上传</span><b>主机发送</b></div>
         </footer>
       </section>
       </div>

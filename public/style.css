@@ -305,7 +305,7 @@ body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-rows: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -2770,4 +2770,13 @@ body {
   font-family: "Cascadia Mono", "Noto Sans Mono CJK SC", "DejaVu Sans Mono", Consolas, monospace;
   font-size: 10px;
   line-height: 1.25;
+}
+
+
+#ovNetCard {
+  cursor: pointer;
+}
+
+#ovNetCard:hover {
+  border-color: #4f6a7a;
 }
