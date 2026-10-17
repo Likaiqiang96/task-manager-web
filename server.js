@@ -808,7 +808,39 @@ function detectTransfers(now, diskDevices, dtSeconds) {
  * USB 桥接盘 / SD 卡没有该接口时，退化为挂载状态、剩余空间、内核 I/O 错误等基础检查。
  */
 
-let healthState = { at: 0, refreshing: false, disks: {} };
+let healthState = { at: 0, date: '', refreshing: false, disks: {} };
+const HEALTH_STATE_FILE = path.join(__dirname, 'data', 'health-state.json');
+
+function healthDay() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function loadHealthState() {
+  try {
+    const data = JSON.parse(fs.readFileSync(HEALTH_STATE_FILE, 'utf8'));
+    if (data && data.at && data.disks) {
+      healthState = { ...data, refreshing: false };
+    }
+  } catch {
+    /* 没有历史健康状态 */
+  }
+}
+
+function saveHealthState() {
+  try {
+    fs.mkdirSync(path.dirname(HEALTH_STATE_FILE), { recursive: true });
+    fs.writeFileSync(
+      HEALTH_STATE_FILE,
+      JSON.stringify({ ...healthState, refreshing: false }, null, 2)
+    );
+  } catch (err) {
+    console.error('[health] 保存状态失败', err.message);
+  }
+}
 let kernelCache = { at: 0, errors: {} };
 
 async function runCommand(command, args, timeout = 8000) {
@@ -823,7 +855,7 @@ async function runCommand(command, args, timeout = 8000) {
   }
 }
 
-async function readSmart(name) {
+async function readSmartUdisks2(name) {
   const blockPath = `/org/freedesktop/UDisks2/block_devices/${name}`;
   const driveOut = await runCommand('gdbus', [
     'call',
@@ -884,26 +916,157 @@ async function readSmart(name) {
   };
 }
 
+
+const SMARTCTL_IMAGE = 'alpine:3.20';
+const SMART_HELPER_NAME = 'tm-smart-helper';
+const smartctlCache = new Map();
+
+async function ensureSmartHelper() {
+  const running = (await runCommand('docker', ['inspect', '-f', '{{.State.Running}}', SMART_HELPER_NAME], 3000)).trim();
+  if (running === 'true') return true;
+  const exists = (await runCommand('docker', ['inspect', '-f', '{{.Id}}', SMART_HELPER_NAME], 3000)).trim();
+  if (exists) {
+    await runCommand('docker', ['start', SMART_HELPER_NAME], 8000);
+    return true;
+  }
+  await runCommand(
+    'docker',
+    [
+      'run', '-d', '--name', SMART_HELPER_NAME,
+      '--restart', 'unless-stopped',
+      '--privileged', '-v', '/dev:/dev',
+      '--entrypoint', 'sh', SMARTCTL_IMAGE,
+      '-c', 'apk add --no-cache smartmontools >/dev/null 2>&1 && sleep infinity',
+    ],
+    120000
+  );
+  return true;
+}
+
+async function readSmartctl(name) {
+  const cached = smartctlCache.get(name);
+  if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.value;
+  const script =
+    'apk add --no-cache smartmontools >/dev/null 2>&1; ' +
+    `smartctl -a -j -d sat /dev/${name} 2>/dev/null || true`;
+  const out = await runCommand(
+    'docker',
+    ['run', '--rm', '--privileged', '-v', '/dev:/dev', '--entrypoint', 'sh', SMARTCTL_IMAGE, '-c', script],
+    120000
+  );
+  const text = String(out || '');
+  const begin = text.indexOf('{');
+  const finish = text.lastIndexOf('}');
+  if (begin < 0 || finish <= begin) {
+    smartctlCache.set(name, { at: Date.now(), value: null });
+    return null;
+  }
+  let data;
+  try {
+    data = JSON.parse(text.slice(begin, finish + 1));
+  } catch {
+    smartctlCache.set(name, { at: Date.now(), value: null });
+    return null;
+  }
+  if (!data.smart_support && !data.ata_smart_attributes && !data.smart_status) {
+    smartctlCache.set(name, { at: Date.now(), value: null });
+    return null;
+  }
+  const table = (data.ata_smart_attributes && data.ata_smart_attributes.table) || [];
+  const get = (id) => table.find((item) => item.id === id) || null;
+  const raw = (id) => {
+    const item = get(id);
+    return item && item.raw ? Number(item.raw.value) : null;
+  };
+  const normalized = (id) => {
+    const item = get(id);
+    return item ? Number(item.value) : null;
+  };
+  const passed = data.smart_status ? data.smart_status.passed !== false : true;
+  const powerOnHours = (data.power_on_time && data.power_on_time.hours) || raw(9) || null;
+  const temp = (data.temperature && data.temperature.current) || raw(194) || null;
+  const reallocated = raw(5) || 0;
+  const pending = raw(197) || 0;
+  const offline = raw(198) || 0;
+  const reported = raw(187) || 0;
+  const commandTimeout = raw(188) || 0;
+  const loadCycles = raw(193) || 0;
+  const loadValue = normalized(193);
+  const crc = raw(199) || 0;
+  const warnings = [];
+  if (reported > 0) warnings.push(`不可纠正错误 ${reported}`);
+  if (pending > 0) warnings.push(`待映射扇区 ${pending}`);
+  if (offline > 0) warnings.push(`离线不可纠正扇区 ${offline}`);
+  if (crc > 0) warnings.push(`UDMA CRC 错误 ${crc}`);
+  if (loadCycles > 0 && loadValue != null && loadValue <= 5) {
+    warnings.push(`负载/卸载周期 ${loadCycles}，归一化值 ${loadValue}/100`);
+  }
+  if (commandTimeout > 0) warnings.push(`命令超时属性最差值 ${(get(188) && get(188).worst) ?? '—'}/100`);
+  if (!passed) warnings.push('SMART 整体健康自检失败');
+  const value = {
+    supported: Boolean(data.smart_support ? data.smart_support.available !== false : true),
+    enabled: Boolean(data.smart_support ? data.smart_support.enabled !== false : true),
+    failing: !passed,
+    updatedAt: Date.now(),
+    temperatureC: temp != null ? Math.round(Number(temp)) : null,
+    powerOnHours: powerOnHours != null ? Math.round(Number(powerOnHours)) : null,
+    badSectors: reallocated + pending + offline,
+    attributesFailing: 0,
+    attributesFailedPast: 0,
+    selftest: (data.ata_smart_data && data.ata_smart_data.self_test && data.ata_smart_data.self_test.status && data.ata_smart_data.self_test.status.string) || null,
+    warnings,
+    loadCycleCount: loadCycles || null,
+    loadCycleValue: loadValue,
+    reportedUncorrect: reported || null,
+    commandTimeout: commandTimeout || null,
+    source: 'smartctl',
+    model: data.model_name || '',
+    serial: data.serial_number || '',
+    exitStatus: data.smartctl ? data.smartctl.exit_status : null,
+  };
+  smartctlCache.set(name, { at: Date.now(), value });
+  return value;
+}
+
+async function readSmart(name) {
+  let smart = null;
+  try {
+    smart = await readSmartUdisks2(name);
+  } catch {
+    smart = null;
+  }
+  if (smart && smart.supported) return smart;
+  try {
+    const fallback = await readSmartctl(name);
+    return fallback || smart;
+  } catch {
+    return smart;
+  }
+}
+
 async function scanKernelErrors(deviceNames) {
   if (Date.now() - kernelCache.at < 5 * 60 * 1000) return kernelCache.errors;
 
   const out = await runCommand(
     'journalctl',
-    ['-k', '--since', '24 hours ago', '-o', 'cat', '--no-pager', '-n', '12000'],
-    20000
+    ['-k', '--since', '7 days ago', '-o', 'cat', '--no-pager', '-n', '40000'],
+    25000
   );
 
   const errors = {};
   const patterns =
-    /I\/O error|critical medium error|Buffer I\/O error|blk_update_request|EXT4-fs error|XFS .*error|ata[0-9.]+:.*(?:error|failed)|SMART.*(?:error|failure)|medium error|command failed|link is slow|reset (?:high|full) speed/i;
+    /I\/O error|critical medium error|Buffer I\/O error|blk_update_request|EXT4-fs.*(?:error|warning: mounting fs with errors)|XFS .*error|ata[0-9.]+:.*(?:error|failed)|SMART.*(?:error|failure)|medium error|command failed|link is slow|reset (?:high|full) speed|error count since last fsck|initial error at time|last error at time|fsck/i;
 
   for (const line of out.split('\n')) {
     if (!line || !patterns.test(line)) continue;
     for (const name of deviceNames) {
-      const re = new RegExp(`(^|[^A-Za-z0-9])${name}([^A-Za-z0-9]|$)`);
-      if (re.test(line)) {
-        errors[name] = (errors[name] || 0) + 1;
-        errors[`${name}Last`] = line.trim().slice(0, 220);
+      const re = new RegExp(`(^|[^A-Za-z0-9])${name}(?:p?\\d+)?([^A-Za-z0-9]|$)`);
+      if (!re.test(line)) continue;
+      errors[name] = (errors[name] || 0) + 1;
+      errors[`${name}Last`] = line.trim().slice(0, 220);
+      const fsCount = /error count since last fsck:\s*(\d+)/i.exec(line);
+      if (fsCount) {
+        errors[`${name}FsCount`] = Math.max(errors[`${name}FsCount`] || 0, Number(fsCount[1]));
       }
     }
   }
@@ -928,6 +1091,7 @@ function basicChecks(dev, kernel) {
     freePct,
     kernelErrors: kernel[dev.name] || 0,
     kernelLast: kernel[`${dev.name}Last`] || null,
+    fsErrorCount: kernel[`${dev.name}FsCount`] || 0,
   };
 }
 
@@ -951,8 +1115,13 @@ function composeHealth(dev, smart, basic) {
     if (smart.badSectors > 0) {
       raise('warning', `检测到 ${smart.badSectors} 个坏扇区`);
     }
-    if (smart.selftest && smart.selftest !== 'success' && smart.selftest !== 'unknown') {
+    const selftestOk =
+      !smart.selftest || /success|completed without error|unknown|passed/i.test(smart.selftest);
+    if (!selftestOk) {
       raise('warning', `上次自检状态：${smart.selftest}`);
+    }
+    if (Array.isArray(smart.warnings)) {
+      for (const warning of smart.warnings) raise('warning', warning);
     }
     if (smart.temperatureC != null) {
       if (smart.temperatureC >= 65) {
@@ -968,10 +1137,13 @@ function composeHealth(dev, smart, basic) {
     if (basic.freePct < 3) raise('critical', `剩余空间不足（${basic.freePct}%）`);
     else if (basic.freePct < 10) raise('warning', `剩余空间偏低（${basic.freePct}%）`);
   }
+  if (basic.fsErrorCount > 0) {
+    raise('warning', `文件系统错误记录 ${basic.fsErrorCount} 次，建议运行 e2fsck`);
+  }
   if (basic.kernelErrors > 0) {
     raise(
       basic.kernelErrors >= 5 ? 'critical' : 'warning',
-      `内核日志中有 ${basic.kernelErrors} 条 I/O 错误`
+      `内核日志中有 ${basic.kernelErrors} 条 I/O/文件系统错误`
     );
   }
 
@@ -995,7 +1167,7 @@ function composeHealth(dev, smart, basic) {
     status,
     label: labels[status],
     summary,
-    source: smartUsable ? 'smart' : 'basic',
+    source: smartUsable ? (smart && smart.source === 'smartctl' ? 'smartctl' : 'smart') : 'basic',
     smartUsable,
     issues,
     checkedAt: Date.now(),
@@ -1006,7 +1178,8 @@ function composeHealth(dev, smart, basic) {
 
 async function refreshHealth(force = false) {
   if (healthState.refreshing) return healthState;
-  if (!force && healthState.at && Date.now() - healthState.at < 30000) return healthState;
+  const today = healthDay();
+  if (!force && healthState.at && healthState.date === today) return healthState;
 
   healthState = { ...healthState, refreshing: true, error: null };
   broadcast('health', healthState);
@@ -1032,10 +1205,12 @@ async function refreshHealth(force = false) {
 
     healthState = {
       at: Date.now(),
+      date: today,
       refreshing: false,
       disks,
       durationMs: Date.now() - startedAt,
     };
+    saveHealthState();
     broadcast('health', healthState);
     console.log(
       `[health] 检查完成：${list.length} 块磁盘，用时 ${Date.now() - startedAt}ms`
@@ -1451,7 +1626,7 @@ function scanCliDownloads(now) {
   return downloads;
 }
 
-const FILE_SERVICE_CLIENT_PORTS = { jellyfin: 8096 };
+const FILE_SERVICE_CLIENT_PORTS = { jellyfin: 8096, photoprism: 2342 };
 const fileServiceClients = new Map();
 let fileServiceClientAt = 0;
 
@@ -1760,6 +1935,24 @@ done
             : hostPath;
           files.push({ fd: 'log', hostPath, disk, relative });
           break;
+        }
+      }
+
+      if (!files.length) {
+        // 某些服务（如 PhotoPrism）用 mmap/缓存读图，fd 抓不到；
+        // 回退到挂载点所在磁盘，保证至少能画出「磁盘 → 客户端」的线
+        const share = shares.find((m) => m.Destination && m.Source);
+        if (share) {
+          const hostPath = share.Source;
+          const disk = findDiskForPath(hostPath);
+          if (disk && disk !== 'sdb') {
+            state.at = Date.now();
+            state.container = name;
+            state.disk = disk;
+            state.file = '';
+            state.files = [];
+            fileServiceOpenState = state;
+          }
         }
       }
 
@@ -2301,10 +2494,24 @@ async function collectRemote() {
         ip: clients[0] || 'docker',
         ipLabel: clients[0] || 'Docker 网络',
         name: clients[0] || item.app || 'Jellyfin',
-        vendor: /openlist/i.test(item.name) ? 'OpenList 客户端' : 'Jellyfin 客户端',
+        vendor: /openlist/i.test(item.name)
+          ? 'OpenList 客户端'
+          : /photoprism/i.test(item.name)
+            ? 'PhotoPrism 客户端'
+            : 'Jellyfin 客户端',
         type: 'container',
-        typeLabel: /openlist/i.test(item.name) ? '网盘播放' : '媒体服务',
-        services: [/openlist/i.test(item.name) ? 'OpenList' : 'Jellyfin'],
+        typeLabel: /openlist/i.test(item.name)
+          ? '网盘播放'
+          : /photoprism/i.test(item.name)
+            ? '照片/视频'
+            : '媒体服务',
+        services: [
+          /openlist/i.test(item.name)
+            ? 'OpenList'
+            : /photoprism/i.test(item.name)
+              ? 'PhotoPrism'
+              : 'Jellyfin',
+        ],
         connections: clients.length || 1,
         downloadBps: Math.round(Math.max(item.sendBps || 0, item.lastSend || 0)),
         uploadBps: Math.round(Math.max(item.recvBps || 0, item.lastRecv || 0)),
@@ -2317,7 +2524,11 @@ async function collectRemote() {
         clients,
         lastSeen: now,
         streams: [{
-          service: /openlist/i.test(item.name) ? 'OpenList' : 'Jellyfin',
+          service: /openlist/i.test(item.name)
+            ? 'OpenList'
+            : /photoprism/i.test(item.name)
+              ? 'PhotoPrism'
+              : 'Jellyfin',
           file,
           disk,
           bps: Math.round(Math.max(item.sendBps || 0, item.lastSend || 0)),
@@ -2325,6 +2536,7 @@ async function collectRemote() {
       });
     }
 
+    devices.push(...mediaCards);
 
     if (mediaItems.length && now - fileServiceOpenState.at > 2000) {
       scanFileServiceOpenFiles().catch(() => {});
@@ -3114,7 +3326,8 @@ async function collectNetwork() {
       const sendBps = Math.max(0, (tx - base.tx) / span);
       containerNetHistory.set(name, history);
 
-      if (/openlist|filebrowser|kodbox|alist|jellyfin/i.test(name) && recvBps + sendBps >= 64 * 1024) {
+      const serviceThreshold = /photoprism/i.test(name) ? 8 * 1024 : 64 * 1024;
+      if (/openlist|filebrowser|kodbox|alist|jellyfin|photoprism/i.test(name) && recvBps + sendBps >= serviceThreshold) {
         const previous = containerFileTransfers.get(name);
         containerFileTransfers.set(name, {
           name,
@@ -3449,7 +3662,9 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/health') {
-    if (!healthState.at && !healthState.refreshing) refreshHealth(true);
+    if ((!healthState.at || healthState.date !== healthDay()) && !healthState.refreshing) {
+      refreshHealth(false);
+    }
     sendJson(res, healthState);
     return;
   }
@@ -3521,8 +3736,8 @@ setInterval(() => {
   }
 }, 500);
 
-setTimeout(() => refreshHealth(true), 2500);
-setInterval(() => refreshHealth(false), 60000);
+loadHealthState();
+setTimeout(() => refreshHealth(false), 2500);
 
 setInterval(() => {
   try {

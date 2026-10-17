@@ -79,6 +79,8 @@ CPU 百分比是**占全部逻辑处理器**的比例（4 核机器上跑满一�
 - 设备状态在轮询间持久保留，磁盘映射阈值降到 32 KB/s 并会沿用上一块磁盘，减少小文件 / 断续传输时曲线闪烁或消失
 - 设备识别是尽力而为：优先使用浏览器 User-Agent（访问本页面时记录），其次 MAC OUI 厂商库（nmap）、mDNS / NetBIOS 主机名和协议特征；随机 MAC 会标注「随机 MAC」
 - **OpenList** 的源盘通过 `docker exec` 读取容器内 `/proc/*/fd` 的打开文件路径，再映射到宿主机磁盘；**SMB** 通过 `smbstatus` + 宿主 `smbd` 的 fd 精确取源盘/目标盘；拿不到 fd 时才退回读写速率推断
+- **磁盘健康每天只自动检查一次**：结果按日期（Asia/Shanghai）持久化到 `data/health-state.json`；同一天刷新页面或重启服务直接复用，不再重复跑 smartctl；只有手动点「检查健康」才会强制重新检查
+- **SMART** 优先走 UDisks2；USB/SAT 桥不暴露 ATA 接口时，回退到 `smartctl` 容器（`alpine` + `smartmontools`）读取属性；内核日志扫描 7 天内的 I/O 和 EXT4 文件系统错误，并解析 `error count since last fsck`；文件系统错误会标为“注意”并建议 `e2fsck`
 - **curl / wget 命令行下载**也会显示在总览：读取进程的打开输出文件、URL 域名和文件大小增量，地球显示「外网下载」，底部文件传输信息列出文件名、来源域名和目标磁盘
 - SMB 设备卡片和底部「文件传输信息」会显示 `smbstatus` / fd 读到的真实文件名（例如 `FireDisk/public/登记照视频花絮/VID_20250405_170734.mp4`）
 
@@ -407,3 +409,5 @@ MIT © 2026 Likaiqiang96
 
 - **同一客户端 IP 的多个媒体流**（如 OpenList + Jellyfin 同时播放）会合并成一个设备卡片，卡片上保留 `OpenList · Jellyfin` 两个服务，底部文件传输信息按流分别列出，磁盘标签也并排显示
 - **OpenList 网页播放/下载到局域网客户端**时，也显示为具体设备卡片：客户端 IP、播放文件、源磁盘；`OpenList` 标签贴在源盘上，连线从源盘指向客户端。OpenList / Jellyfin 的服务标签同时显示在源磁盘和远程设备 IP 卡片上；发向同一 IP 的不同流不强制合并，各自独立显示；OpenList 向外部网络上传时连线终点仍是外部网络地球
+
+- **PhotoPrism** 也已接入：容器网络速率 + 2342 端口客户端 + `/photoprism/originals` 挂载映射，照片/视频浏览时显示为具体客户端设备；fd 抓不到具体文件时回退到 originals 挂载所在磁盘，保证「磁盘 → 客户端」的连线；索引时显示磁盘读取

@@ -1157,7 +1157,13 @@ function healthTitle(dev, health) {
   }
 
   lines.push(
-    `健康状态：${health.label}（${health.source === 'smart' ? 'SMART' : '基础检查'}）`
+    `健康状态：${health.label}（${
+      health.source === 'smart'
+        ? 'SMART'
+        : health.source === 'smartctl'
+          ? 'SMART（smartctl）'
+          : '基础检查'
+    }）`
   );
   if (health.issues && health.issues.length) {
     lines.push(`问题：${health.issues.join('；')}`);
@@ -1168,6 +1174,10 @@ function healthTitle(dev, health) {
     lines.push(
       `坏扇区：${s.badSectors ?? 0} · 失败属性：${s.attributesFailing ?? 0} · 自检：${s.selftest || '—'}`
     );
+    if (s.loadCycleCount != null) lines.push(`负载/卸载周期：${formatNumber(s.loadCycleCount)}（归一化 ${s.loadCycleValue ?? '—'}/100）`);
+    if (s.reportedUncorrect) lines.push(`不可纠正错误：${formatNumber(s.reportedUncorrect)}`);
+    if (s.commandTimeout) lines.push(`命令超时：${formatNumber(s.commandTimeout)}`);
+    if (s.warnings && s.warnings.length) lines.push(`SMART 警告：${s.warnings.join('；')}`);
   } else {
     lines.push('SMART：此设备未提供 ATA/SMART 接口');
   }
@@ -1183,7 +1193,8 @@ function healthTitle(dev, health) {
         ).toFixed(1)}%）`
       );
     }
-    if (b.kernelErrors) lines.push(`内核 I/O 错误：${b.kernelErrors} 条`);
+    if (b.fsErrorCount) lines.push(`文件系统错误记录：${b.fsErrorCount} 次（建议 e2fsck）`);
+    if (b.kernelErrors) lines.push(`内核 I/O/文件系统错误：${b.kernelErrors} 条`);
   }
   if (health.checkedAt) lines.push(`检查时间：${fmtClock(health.checkedAt)}`);
   return lines.join('\n');
@@ -1196,11 +1207,20 @@ function buildMetrics(health) {
     parts.push(`温度 <b>${health.smart.temperatureC ?? '—'}°C</b>`);
     parts.push(`通电 <b>${formatNumber(health.smart.powerOnHours)} 小时</b>`);
     parts.push(`坏扇区 <b>${health.smart.badSectors ?? 0}</b>`);
+    if (health.smart.loadCycleCount != null) {
+      parts.push(`负载周期 <b>${formatNumber(health.smart.loadCycleCount)}</b>`);
+    }
+    if (health.smart.reportedUncorrect) {
+      parts.push(`不可纠正 <b>${formatNumber(health.smart.reportedUncorrect)}</b>`);
+    }
+    if (health.smart.warnings && health.smart.warnings.length) {
+      parts.push(`SMART 警告 <b>${health.smart.warnings.length}</b>`);
+    }
   } else {
     const free = health.basic && health.basic.freePct;
     parts.push('SMART <b>不可用</b>');
     parts.push(`剩余 <b>${free != null ? `${free.toFixed(1)}%` : '—'}</b>`);
-    parts.push(`I/O 错误 <b>${health.basic ? health.basic.kernelErrors : 0}</b>`);
+    parts.push(`I/O 错误 <b>${health.basic ? (health.basic.kernelErrors || 0) + (health.basic.fsErrorCount || 0) : 0}</b>`);
   }
   return parts.map((part) => `<span>${part}</span>`).join('');
 }
@@ -1274,7 +1294,7 @@ function updateDiskServiceTags() {
   for (const device of (state.remote && state.remote.devices) || []) {
     if (!device.active || !device.readDisk) continue;
     for (const serviceName of device.services || []) {
-      if (serviceName !== 'OpenList' && serviceName !== 'Jellyfin') continue;
+      if (serviceName !== 'OpenList' && serviceName !== 'Jellyfin' && serviceName !== 'PhotoPrism') continue;
       media.push({ name: serviceName, disk: device.readDisk, file: device.readFile || '' });
     }
   }
@@ -1409,7 +1429,13 @@ function renderHealthTable() {
     const bad = smart && smart.badSectors != null ? `${smart.badSectors}` : '—';
     const free =
       basic && basic.freePct != null ? `${basic.freePct.toFixed(1)}%` : '—';
-    const source = health ? (health.source === 'smart' ? 'SMART' : '基础检查') : '—';
+    const source = health
+      ? health.source === 'smart'
+        ? 'SMART'
+        : health.source === 'smartctl'
+          ? 'SMART (smartctl)'
+          : '基础检查'
+      : '—';
     const sourceCell =
       source === '—' ? '<span class="muted">—</span>' : `<span class="health-source-tag">${source}</span>`;
     const mutedClass = (value) => (value === '—' ? ' muted' : '');
