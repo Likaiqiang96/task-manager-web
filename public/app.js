@@ -18,6 +18,7 @@
     networkSeries: [],
     view: 'overview',
     cpuMode: 'total',
+    cpuCoreCharts: [],
     diskName: null,
     diskSig: '',
     diskRows: [],
@@ -453,56 +454,85 @@
     return CPU_CORE_COLORS[index % CPU_CORE_COLORS.length];
   }
 
-  function cpuCoresTooltip(payload) {
-    if (!payload) return hideTooltip();
-    const rows = payload.values.map((value, index) => ({
-      color: cpuCoreColor(index),
-      label: `逻辑处理器 ${index}`,
-      value: value == null ? '—' : pct(value),
-    }));
-    showTooltip(timeLabel(payload.index), rows, payload.x, payload.y);
+  function cpuGridShape(count) {
+    const cols = count <= 4 ? Math.min(2, Math.max(1, count)) : 4;
+    return { cols, rows: Math.ceil(count / cols) };
   }
 
-  function renderCpuLegend(count) {
-    const el = $('#cpuLegend');
-    if (!el) return;
-    if (!count) {
-      el.hidden = true;
-      el.innerHTML = '';
-      return;
+  function cpuCoreTooltip(index, color) {
+    return (payload) => {
+      if (!payload) return hideTooltip();
+      const value = payload.values[0];
+      showTooltip(
+        timeLabel(payload.index),
+        [{ color, label: `CPU ${index}`, value: value == null ? '—' : pct(value) }],
+        payload.x,
+        payload.y
+      );
+    };
+  }
+
+  function ensureCpuCoreGrid(count) {
+    const grid = $('#cpuCoresGrid');
+    if (!grid) return;
+    const { cols, rows } = cpuGridShape(count);
+    grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+    grid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+    if (state.cpuCoreCharts.length === count && grid.children.length === count) return;
+
+    grid.innerHTML = '';
+    state.cpuCoreCharts = [];
+    for (let index = 0; index < count; index += 1) {
+      const color = cpuCoreColor(index);
+      const card = document.createElement('div');
+      card.className = 'cpu-core-card';
+      card.innerHTML =
+        `<div class="cpu-core-card-head">` +
+        `<span class="cpu-core-card-name"><i style="background:${color}"></i>CPU ${index}</span>` +
+        `<span class="cpu-core-card-val">--</span>` +
+        `</div>` +
+        `<div class="cpu-core-chart"><canvas></canvas></div>`;
+      grid.appendChild(card);
+      const chart = new Chart(card.querySelector('canvas'), {
+        max: 100,
+        grid: true,
+        labels: false,
+        minScale: 0,
+        hover: true,
+        tooltip: cpuCoreTooltip(index, color),
+        series: [{ color, fill: true, width: 1.3 }],
+      });
+      state.cpuCoreCharts.push({ chart, valueEl: card.querySelector('.cpu-core-card-val') });
     }
-    el.hidden = false;
-    el.innerHTML = Array.from(
-      { length: count },
-      (_, index) =>
-        `<span class="cpu-legend-item"><i style="background:${cpuCoreColor(index)}"></i>CPU ${index}</span>`
-    ).join('');
+    requestAnimationFrame(() => {
+      state.cpuCoreCharts.forEach((entry) => entry.chart.resize());
+    });
   }
 
   function updateCpuPerformance(last, cpuSeries) {
     const cores = (last.cpu && last.cpu.perCore) || [];
-    if (state.cpuMode === 'cores' && cores.length) {
-      const series = cores.map((_, index) => ({
-        color: cpuCoreColor(index),
-        fill: false,
-        width: 1.35,
-      }));
-      const data = cores.map((_, index) =>
+    const coresMode = state.cpuMode === 'cores' && cores.length > 0;
+    const totalPanel = $('#cpuTotalPanel');
+    const coresGrid = $('#cpuCoresGrid');
+    if (totalPanel) totalPanel.hidden = coresMode;
+    if (coresGrid) coresGrid.hidden = !coresMode;
+
+    if (coresMode) {
+      ensureCpuCoreGrid(cores.length);
+      const arrays = cores.map((_, index) =>
         pad60(state.samples.map((sample) => sample.cpu.perCore?.[index] ?? null))
       );
-      if (charts.cpu) {
-        charts.cpu.setSeries(series);
-        charts.cpu.opts.tooltip = cpuCoresTooltip;
-        charts.cpu.setData(data);
-      }
-      renderCpuLegend(cores.length);
-    } else {
-      if (charts.cpu) {
-        charts.cpu.setSeries([{ color: COLORS.cpu, fill: true, width: 1.6 }]);
-        charts.cpu.opts.tooltip = cpuTooltip;
-        charts.cpu.setData([cpuSeries]);
-      }
-      renderCpuLegend(0);
+      state.cpuCoreCharts.forEach((entry, index) => {
+        entry.chart.setData([arrays[index]]);
+        entry.valueEl.textContent = pct(cores[index]);
+      });
+      requestAnimationFrame(() => {
+        state.cpuCoreCharts.forEach((entry) => entry.chart.resize());
+      });
+    } else if (charts.cpu) {
+      charts.cpu.setSeries([{ color: COLORS.cpu, fill: true, width: 1.6 }]);
+      charts.cpu.opts.tooltip = cpuTooltip;
+      charts.cpu.setData([cpuSeries]);
     }
   }
 
@@ -511,6 +541,7 @@
     $$('#cpuModeToggle [data-cpu-mode]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.cpuMode === state.cpuMode);
     });
+    savePageState();
     render();
   }
 
@@ -749,6 +780,7 @@
     hideTooltip();
     state.view = view;
     state.diskName = view === 'disk' ? diskName : null;
+    savePageState();
 
     $$('.view').forEach((el) => {
       el.hidden = el.dataset.view !== view;
@@ -1538,6 +1570,51 @@ function updateFooterBrief() {
   setText('#footerBrief', parts.join(' · '));
 }
 
+const PAGE_STATE_KEYS = {
+  page: 'task-manager-web.page',
+  view: 'task-manager-web.view',
+  disk: 'task-manager-web.disk',
+  mode: 'task-manager-web.cpuMode',
+};
+
+function savePageState() {
+  try {
+    localStorage.setItem(PAGE_STATE_KEYS.page, state.page);
+    localStorage.setItem(PAGE_STATE_KEYS.view, state.view);
+    localStorage.setItem(PAGE_STATE_KEYS.disk, state.diskName || '');
+    localStorage.setItem(PAGE_STATE_KEYS.mode, state.cpuMode);
+  } catch {
+    /* localStorage 不可用时忽略 */
+  }
+}
+
+function restorePageState() {
+  let page = 'overview';
+  let view = 'overview';
+  let disk = '';
+  let mode = 'total';
+  try {
+    page = localStorage.getItem(PAGE_STATE_KEYS.page) || page;
+    view = localStorage.getItem(PAGE_STATE_KEYS.view) || view;
+    disk = localStorage.getItem(PAGE_STATE_KEYS.disk) || '';
+    mode = localStorage.getItem(PAGE_STATE_KEYS.mode) || mode;
+  } catch {
+    /* ignore */
+  }
+  state.cpuMode = mode === 'cores' ? 'cores' : 'total';
+  $$('#cpuModeToggle [data-cpu-mode]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.cpuMode === state.cpuMode);
+  });
+  const pages = ['overview', 'performance', 'processes', 'users', 'details', 'services', 'network'];
+  const views = ['overview', 'cpu', 'mem', 'disk', 'network'];
+  if (!pages.includes(page)) page = 'overview';
+  if (!views.includes(view)) view = 'overview';
+  setPage(page);
+  if (page === 'performance') {
+    showView(view, view === 'disk' && disk ? disk : null);
+  }
+}
+
 function setPage(page) {
   const next = ['performance', 'processes', 'users', 'services', 'network', 'details'].includes(page)
     ? page
@@ -1601,6 +1678,8 @@ function setPage(page) {
       updateTransferBar();
     });
   }
+
+  savePageState();
 }
 
 /* ---------------------------- 跨盘传输 ---------------------------- */
@@ -3100,7 +3179,7 @@ async function loadProcesses() {
   initProcessUI();
   bindUI();
   setLive(false);
-  setPage('overview');
+  restorePageState();
   loadInfo();
   loadHealth();
   loadProcesses();

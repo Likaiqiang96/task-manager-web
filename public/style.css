@@ -2845,3 +2845,69 @@ body {
   height: 7px;
   border-radius: 50%;
 }
+
+
+/* CPU 逻辑处理器：每个核一个独立小图 */
+.cpu-total-panel[hidden],
+.cpu-cores-grid[hidden] {
+  display: none;
+}
+
+.cpu-cores-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.cpu-core-card {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px 3px;
+  background: #1b1b1b;
+  border: 1px solid #333333;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.cpu-core-card-head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  color: #9a9a9a;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.cpu-core-card-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cpu-core-card-name i {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.cpu-core-card-val {
+  color: #d0d0d0;
+  font-variant-numeric: tabular-nums;
+}
+
+.cpu-core-chart {
+  flex: 1;
+  min-height: 0;
+}
+
+.cpu-core-chart canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}

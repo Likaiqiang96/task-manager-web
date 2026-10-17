@@ -404,13 +404,13 @@
               <button type="button" data-cpu-mode="total" class="active">总体利用率</button>
               <button type="button" data-cpu-mode="cores">逻辑处理器</button>
             </div>
-            <div class="cpu-legend" id="cpuLegend" hidden></div>
           </div>
         </header>
 
         <div class="detail-body">
-          <div class="chart-panel">
-            <div class="chart-frame"><canvas id="cpuChart"></canvas></div>
+          <div class="chart-panel cpu-chart-panel">
+            <div class="chart-frame cpu-total-panel" id="cpuTotalPanel"><canvas id="cpuChart"></canvas></div>
+            <div class="cpu-cores-grid" id="cpuCoresGrid" hidden></div>
           </div>
           <aside class="stats-panel">
             <div class="stat-row"><span>利用率</span><b id="stCpuUsage">--</b></div>
