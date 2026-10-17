@@ -2757,3 +2757,17 @@ body {
   color: #9b9b9b;
   font-size: 10px;
 }
+
+
+.remote-device-file {
+  display: block;
+  margin-top: 2px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8f9aa0;
+  font-family: "Cascadia Mono", "Noto Sans Mono CJK SC", "DejaVu Sans Mono", Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.25;
+}

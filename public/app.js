@@ -1507,6 +1507,25 @@ function updateTransferBar() {
   if (!listEl || !emptyEl || !countEl) return;
 
   const list = [...state.transferHistory.values()];
+  const remote = state.remote;
+  for (const device of (remote && remote.devices) || []) {
+    if (!device.active) continue;
+    const file = device.readFile || device.writeFile;
+    if (!file) continue;
+    list.push({
+      id: `smb-${device.id}`,
+      key: `smb-${device.id}`,
+      file,
+      from: device.readDisk || '远程设备',
+      to: device.writeDisk || '远程设备',
+      bps: Math.max(device.downloadBps || 0, device.uploadBps || 0),
+      active: true,
+      lastSeen: Date.now(),
+      proc: `${device.name || device.ip} · SMB`,
+      color: '#3ddc97',
+      external: false,
+    });
+  }
   const external = state.remote && state.remote.external;
   if (external && external.active && external.fileService) {
     list.push({
@@ -2093,6 +2112,13 @@ function renderRemote() {
             <span class="remote-device-name">${escapeHtml(device.name || device.ipLabel)}</span>
             <span class="remote-device-meta">${escapeHtml(meta)}</span>
             <span class="remote-device-status">${escapeHtml(status)}</span>
+            ${
+              device.readFile || device.writeFile
+                ? `<span class="remote-device-file" title="${escapeHtml(
+                    device.readFile || device.writeFile
+                  )}">${escapeHtml(device.readFile || device.writeFile)}</span>`
+                : ''
+            }
           </span>
         </div>`;
       })
