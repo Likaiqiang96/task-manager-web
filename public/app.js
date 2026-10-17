@@ -1230,7 +1230,7 @@ function buildDiskCards(devices) {
         <div class="disk-line1">
           <span class="disk-name">${escapeHtml(dev.label)}</span>
           <span class="disk-kind">${escapeHtml(dev.removable ? '可移动' : dev.type || '磁盘')}</span>
-          <span class="disk-service-tag" hidden></span>
+          <span class="disk-service-tags"></span>
         </div>
         <div class="disk-model">${escapeHtml(dev.model)} · ${escapeHtml(mountText(dev.mount))}</div>
         <div class="capacity-bar"><i></i></div>
@@ -1270,26 +1270,39 @@ function updateDiskServiceTags() {
   const external = state.remote && state.remote.external;
   const service = external && external.active && external.fileService ? external.fileServiceName : '';
   const disk = external && external.active && external.fileService ? external.disk : '';
-  const jellyfin = ((state.remote && state.remote.devices) || []).filter(
-    (device) => device.active && (device.services || []).includes('Jellyfin') && device.readDisk
-  );
+  const mediaServices = [];
+  for (const device of (state.remote && state.remote.devices) || []) {
+    if (!device.active) continue;
+    if (Array.isArray(device.streams) && device.streams.length) {
+      for (const stream of device.streams) {
+        if (!stream.disk) continue;
+        mediaServices.push({ name: stream.service, disk: stream.disk, file: stream.file || '' });
+      }
+    } else if (device.readDisk) {
+      for (const serviceName of device.services || []) {
+        if (serviceName !== 'OpenList' && serviceName !== 'Jellyfin') continue;
+        mediaServices.push({ name: serviceName, disk: device.readDisk, file: device.readFile || '' });
+      }
+    }
+  }
   for (const [name, card] of state.cards) {
-    const tag = card.querySelector('.disk-service-tag');
-    if (!tag) continue;
-    const jf = jellyfin.find((device) => device.readDisk === name);
-    const extActive = Boolean(service && disk === name);
-    const active = extActive || Boolean(jf);
-    const label = jf ? 'Jellyfin' : service;
-    tag.hidden = !active;
-    tag.textContent = active ? label : '';
-    const file = extActive
-      ? external.fileServiceFile
-        ? `（${external.fileServiceFile}）`
-        : ''
-      : jf && jf.readFile
-        ? `（${jf.readFile}）`
-        : '';
-    tag.title = active ? `${label} 正在使用此磁盘${file}` : '';
+    const box = card.querySelector('.disk-service-tags');
+    if (!box) continue;
+    const labels = [];
+    if (service && disk === name) {
+      labels.push({ name: service, file: external.fileServiceFile || '' });
+    }
+    for (const media of mediaServices) {
+      if (media.disk !== name) continue;
+      if (labels.some((item) => item.name === media.name)) continue;
+      labels.push({ name: media.name, file: media.file || '' });
+    }
+    box.innerHTML = labels
+      .map((item) => {
+        const title = `${item.name} 正在使用此磁盘${item.file ? `（${item.file}）` : ''}`;
+        return `<span class="disk-service-tag" title="${escapeHtml(title)}">${escapeHtml(item.name)}</span>`;
+      })
+      .join('');
   }
 }
 
@@ -1774,6 +1787,25 @@ function updateTransferBar() {
   const remote = state.remote;
   for (const device of (remote && remote.devices) || []) {
     if (!device.active) continue;
+    if (Array.isArray(device.streams) && device.streams.length) {
+      for (const stream of device.streams) {
+        if (!stream.file) continue;
+        list.push({
+          id: `media-${device.id}-${stream.service}`,
+          key: `media-${device.id}-${stream.service}`,
+          file: stream.file,
+          from: stream.disk || device.readDisk || '磁盘',
+          to: device.name || device.ip || '客户端',
+          bps: stream.bps || 0,
+          active: true,
+          lastSeen: Date.now(),
+          proc: `${device.name || device.ip} · ${stream.service}`,
+          color: '#3ddc97',
+          external: false,
+        });
+      }
+      continue;
+    }
     const file = device.readFile || device.writeFile;
     if (!file) continue;
     list.push({
