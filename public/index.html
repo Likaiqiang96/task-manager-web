@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>任务管理器 - 性能</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="window">
+  <header class="titlebar">
+    <div class="tb-left">
+      <svg class="app-icon" id="iconGauge" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="6.3" fill="none" stroke="#4cc2ff" stroke-width="1.2" opacity=".9"/>
+        <path d="M8 8 10.9 5.1" stroke="#4cc2ff" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="8" cy="8" r="1.1" fill="#4cc2ff"/>
+      </svg>
+      <svg class="app-icon" id="iconFolder" viewBox="0 0 16 16" aria-hidden="true" hidden>
+        <path d="M1.4 4.3h4.1l1.3 1.4h7.8v6.4a1 1 0 0 1-1 1H2.4a1 1 0 0 1-1-1z" fill="none" stroke="#f0c05a" stroke-width="1.2" stroke-linejoin="round"/>
+        <path d="M1.4 5.7h13.2" stroke="#f0c05a" stroke-width="1.1" opacity=".8"/>
+      </svg>
+      <span class="tb-title" id="tbTitle">任务管理器</span>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="页面切换">
+    <button type="button" class="tab active" data-page="overview">总览</button>
+    <button type="button" class="tab" data-page="performance">性能</button>
+    <button type="button" class="tab" data-page="processes">进程</button>
+    <button type="button" class="tab" data-page="users">用户</button>
+    <button type="button" class="tab" data-page="details">详细信息</button>
+    <button type="button" class="tab" data-page="services">服务</button>
+    <button type="button" class="tab" data-page="network">网络连接</button>
+  </nav>
+
+  <div class="workspace">
+    <aside class="resource-list" id="resourceList" aria-label="资源" hidden>
+      <button type="button" class="res-item active" data-key="overview">
+        <div class="res-top"><span class="res-name">性能概览</span><span class="res-val" id="resOverviewVal">--</span></div>
+        <div class="res-sub" id="resOverviewSub">CPU · 内存 · 磁盘</div>
+      </button>
+
+      <button type="button" class="res-item" data-key="cpu">
+        <div class="res-top"><span class="res-name">CPU</span><span class="res-val" id="resCpuVal">--</span></div>
+        <div class="res-sub" id="resCpuSub">--</div>
+        <div class="mini-chart"><canvas id="sideCpuChart"></canvas></div>
+      </button>
+
+      <button type="button" class="res-item" data-key="mem">
+        <div class="res-top"><span class="res-name">内存</span><span class="res-val" id="resMemVal">--</span></div>
+        <div class="res-sub" id="resMemSub">--</div>
+        <div class="mini-chart"><canvas id="sideMemChart"></canvas></div>
+      </button>
+
+      <div id="diskItems"></div>
+    </aside>
+
+    <main class="detail">
+
+      <section class="explorer-page" id="explorerPage" data-page-panel="overview">
+        <div class="explorer-toolbar">
+          <div class="nav-buttons" aria-hidden="true">
+            <button type="button" class="icon-btn" tabindex="-1" title="后退">
+              <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2 4 7l5 5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" class="icon-btn" tabindex="-1" title="前进">
+              <svg width="14" height="14" viewBox="0 0 14 14"><path d="m5 2 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" class="icon-btn" tabindex="-1" title="向上">
+              <svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 12h10M7 2v7M4 5l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+
+          <div class="address-bar">
+            <svg class="address-home" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2 7.2 8 2l6 5.2V14H2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+              <path d="M6.2 14V9.4h3.6V14" fill="none" stroke="currentColor" stroke-width="1.3"/>
+            </svg>
+            <span class="address-current">此电脑</span>
+            <span class="address-sep">›</span>
+            <span class="address-sub">设备和驱动器</span>
+          </div>
+
+          <div class="explorer-actions">
+            <button type="button" class="toolbar-btn" id="healthRefreshBtn" title="重新检查所有磁盘的健康状态">
+              <svg class="refresh-icon" id="healthRefreshIcon" width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.6V6h-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span id="healthRefreshLabel">检查健康</span>
+            </button>
+            <label class="search-box">
+              <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                <path d="m10.4 10.4 3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+              <input id="explorerSearch" type="search" placeholder="搜索此电脑" autocomplete="off" spellcheck="false">
+            </label>
+          </div>
+        </div>
+
+        <div class="explorer-heading">
+          <h2>设备和驱动器</h2>
+          <span class="heading-count" id="diskCount">--</span>
+          <span class="health-summary" id="healthSummary"></span>
+          <span class="health-updated" id="healthUpdated"></span>
+        </div>
+
+        <div class="disk-grid-wrap" id="diskGridWrap">
+          <div class="disk-grid" id="diskGrid"></div>
+        </div>
+
+        <div class="remote-panel" id="remotePanel">
+          <div class="remote-head">
+            <span class="remote-title">远程传输</span>
+            <span class="remote-count" id="remoteCount">检测中…</span>
+            <span class="remote-hint">识别手机 / 电脑 / 平板 · 支持 SMB、SFTP、OpenList 等</span>
+          </div>
+          <div class="remote-body">
+            <div class="remote-globe" id="remoteGlobe" title="外部网络">
+              <div class="remote-globe-icon" id="remoteGlobeIcon">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.4"/>
+                  <ellipse cx="12" cy="12" rx="3.6" ry="8.5" stroke="currentColor" stroke-width="1.1" opacity=".75"/>
+                  <path d="M3.8 9h16.4M3.8 15h16.4" stroke="currentColor" stroke-width="1.1" opacity=".75"/>
+                  <path d="M5 5.6c3.2 2.2 10.8 2.2 14 0M5 18.4c3.2-2.2 10.8-2.2 14 0" stroke="currentColor" stroke-width="1.1" opacity=".55"/>
+                </svg>
+              </div>
+              <div class="remote-globe-info">
+                <b>外部网络 <span class="globe-source" id="globeSource"></span></b>
+                <span id="globeState">空闲</span>
+              </div>
+            </div>
+            <div class="remote-devices" id="remoteDevices"></div>
+          </div>
+        </div>
+
+        <div class="health-panel" id="healthPanel">
+          <div class="health-panel-head">
+            <span class="health-panel-title">磁盘健康</span>
+            <span class="health-panel-note">SMART 数据由 UDisks2 提供 · 不支持的设备使用基础检查</span>
+          </div>
+          <div class="health-table" id="healthTable"></div>
+        </div>
+
+        <div class="transfer-bar">
+          <div class="transfer-title">
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M14 2 2 7l4.2 1.6L8 14z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+              <path d="m6.2 8.6 1.9-1.9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            <span>文件传输信息</span>
+            <span class="transfer-count" id="transferCount"></span>
+          </div>
+          <div class="transfer-list" id="transferList"></div>
+          <div class="transfer-idle" id="transferIdle">暂无检测到的本机跨盘传输文件</div>
+        </div>
+        <canvas id="transferCanvas"></canvas>
+      </section>
+
+
+      <section class="processes-page" id="processesPage" data-page-panel="processes" hidden>
+        <div class="process-toolbar">
+          <div class="process-title">
+            <h2>进程</h2>
+            <span class="process-count" id="processCount">--</span>
+          </div>
+          <div class="process-actions">
+            <label class="search-box process-search">
+              <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                <path d="m10.4 10.4 3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+              <input id="processSearch" type="search" placeholder="搜索进程" autocomplete="off" spellcheck="false">
+            </label>
+          </div>
+        </div>
+
+        <div class="process-summary">
+          <span>CPU 总占用 <b id="procCpuTotal">--</b></span>
+          <span>内存占用 <b id="procMemTotal">--</b></span>
+          <span>磁盘写入 <b id="procWriteTotal">--</b></span>
+          <span>磁盘读取 <b id="procReadTotal">--</b></span>
+          <span class="process-hint" id="processHint">显示 CPU / 内存占用最高的进程 · 点击列标题排序</span>
+        </div>
+
+        <div class="process-table-wrap" id="processTableWrap">
+          <div class="process-table">
+            <div class="process-row process-head">
+              <span class="col-name sortable" data-sort="name" title="点击按名称排序">名称 <span class="head-arrow"></span></span>
+              <span class="col-pid">PID</span>
+              <span class="col-state">状态</span>
+              <span class="col-cpu sortable" data-sort="cpu" title="占全部逻辑处理器；点击按 CPU 排序；条形长度按当前最大值缩放">CPU <span class="head-arrow"></span></span>
+              <span class="col-mem sortable" data-sort="mem" title="占全部内存；点击按内存排序；条形长度按当前最大值缩放">内存 <span class="head-arrow"></span></span>
+              <span class="col-disk">磁盘</span>
+              <span class="col-threads">线程</span>
+              <span class="col-user">用户</span>
+            </div>
+            <div class="process-rows" id="processRows"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="processes-page details-page" id="detailsPage" data-page-panel="details" hidden>
+        <div class="process-toolbar">
+          <div class="process-title">
+            <h2>进程树</h2>
+            <span class="process-count" id="treeCount">--</span>
+          </div>
+          <div class="process-actions">
+            <span class="tree-help">参考 ps -auxf：点击行或箭头展开/折叠</span>
+            <button type="button" class="tree-action" id="treeExpandAll">全部展开</button>
+            <button type="button" class="tree-action" id="treeCollapseAll">全部折叠</button>
+          </div>
+        </div>
+
+        <div class="process-hint" id="treeHint">进程按父子关系排列，缩进和 ├─ / └─ 表示层级</div>
+
+        <div class="process-table-wrap tree-wrap" id="treeWrap">
+          <div class="tree-table">
+            <div class="tree-row tree-head">
+              <span>用户</span>
+              <span>PID</span>
+              <span>PPID</span>
+              <span>CPU</span>
+              <span>内存</span>
+              <span>状态</span>
+              <span>命令</span>
+            </div>
+            <div id="treeRows"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="list-page" id="usersPage" data-page-panel="users" hidden>
+        <div class="list-toolbar">
+          <div class="list-title"><h2>用户</h2><span class="list-count" id="usersCount">--</span></div>
+          <span class="list-hint">当前登录会话、来源 IP 与连接数</span>
+        </div>
+        <div class="list-summary" id="usersSummary"></div>
+        <div class="list-table-wrap">
+          <div class="list-table users-table">
+            <div class="list-row list-head">
+              <span class="u-user">用户</span>
+              <span class="u-host">来源 IP</span>
+              <span class="u-sessions">会话</span>
+              <span class="u-conns">连接数</span>
+              <span class="u-tty">终端</span>
+              <span class="u-login">登录时间</span>
+              <span class="u-idle">空闲</span>
+              <span class="u-command">当前命令</span>
+            </div>
+            <div id="usersRows"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="list-page" id="servicesPage" data-page-panel="services" hidden>
+        <div class="list-toolbar">
+          <div class="list-title"><h2>服务</h2><span class="list-count" id="servicesCount">--</span></div>
+          <label class="search-box list-search">
+            <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.3"/>
+              <path d="m10.4 10.4 3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+            </svg>
+            <input id="servicesSearch" type="search" placeholder="搜索服务" autocomplete="off" spellcheck="false">
+          </label>
+        </div>
+        <div class="list-summary" id="servicesSummary"></div>
+        <div class="list-table-wrap">
+          <div class="list-table services-table">
+            <div class="list-row list-head">
+              <span class="s-name">服务</span>
+              <span class="s-state">状态</span>
+              <span class="s-sub">子状态</span>
+              <span class="s-desc">描述</span>
+            </div>
+            <div id="servicesRows"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="list-page" id="networkPage" data-page-panel="network" hidden>
+        <div class="list-toolbar">
+          <div class="list-title"><h2>网络连接</h2><span class="list-count" id="networkCount">--</span></div>
+          <label class="search-box list-search">
+            <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.3"/>
+              <path d="m10.4 10.4 3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+            </svg>
+            <input id="networkSearch" type="search" placeholder="搜索应用 / IP / 端口" autocomplete="off" spellcheck="false">
+          </label>
+        </div>
+        <div class="list-summary" id="networkSummary"></div>
+        <div class="list-table-wrap">
+          <div class="list-table network-table">
+            <div class="list-row list-head">
+              <span class="n-app">应用</span>
+              <span class="n-proto">协议</span>
+              <span class="n-dir">方向</span>
+              <span class="n-state">状态</span>
+              <span class="n-local">本地地址</span>
+              <span class="n-remote">远程地址</span>
+              <span class="n-recv">接收</span>
+              <span class="n-send">发送</span>
+              <span class="n-total">累计 ↓ / ↑</span>
+            </div>
+            <div id="networkRows"></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="performance-pages" id="performancePages" hidden>
+
+      <!-- ============================ 性能概览 ============================ -->
+      <section class="view" data-view="overview">
+        <div class="overview-grid">
+          <article class="ov-card">
+            <header class="ov-head">
+              <span class="ov-title">CPU</span>
+              <span class="ov-value" id="ovCpuPct">--</span>
+              <span class="ov-meta" id="ovCpuMeta">--</span>
+            </header>
+            <div class="ov-chart"><canvas id="ovCpuChart"></canvas></div>
+            <footer class="ov-foot">
+              <span>进程 <b id="ovCpuProcs">--</b></span>
+              <span>线程 <b id="ovCpuThreads">--</b></span>
+              <span>逻辑处理器 <b id="ovCpuCores">--</b></span>
+              <span class="ov-extra" id="ovCpuModel"></span>
+            </footer>
+          </article>
+
+          <article class="ov-card">
+            <header class="ov-head">
+              <span class="ov-title">内存</span>
+              <span class="ov-value" id="ovMemPct">--</span>
+              <span class="ov-meta" id="ovMemMeta">--</span>
+            </header>
+            <div class="ov-chart"><canvas id="ovMemChart"></canvas></div>
+            <footer class="ov-foot">
+              <span>使用中 <b id="ovMemUsed">--</b></span>
+              <span>可用 <b id="ovMemAvail">--</b></span>
+              <span>已缓存 <b id="ovMemCached">--</b></span>
+              <span>交换 <b id="ovMemSwap">--</b></span>
+            </footer>
+          </article>
+
+          <article class="ov-card">
+            <header class="ov-head">
+              <span class="ov-title">磁盘读写</span>
+              <span class="ov-disk-dual">
+                <span class="ov-disk-item"><span class="ov-disk-label">写入</span><span class="ov-value" id="ovDiskWrite">--</span></span>
+                <span class="ov-disk-item"><span class="ov-disk-label">读取</span><span class="ov-value" id="ovDiskRead">--</span></span>
+              </span>
+              <span class="ov-meta" id="ovDiskMeta">--</span>
+              <span class="legend"><i class="dot write"></i>写入<i class="dot read"></i>读取</span>
+            </header>
+            <div class="ov-chart"><canvas id="ovDiskChart"></canvas></div>
+            <footer class="ov-foot">
+              <span>磁盘数 <b id="ovDiskCount">--</b></span>
+              <span>总容量 <b id="ovDiskCap">--</b></span>
+              <span>IOPS <b id="ovDiskIops">--</b></span>
+              <span>活动时间占比 <b id="ovDiskBusy">--</b></span>
+            </footer>
+          </article>
+        </div>
+      </section>
+
+      <!-- ============================= CPU ============================= -->
+      <section class="view" data-view="cpu" hidden>
+        <header class="detail-head">
+          <div class="head-main">
+            <h1 class="detail-title">CPU</h1>
+            <div class="big-line"><span class="big-val" id="cpuPct">--</span><span class="big-speed" id="cpuSpeedInline">--</span></div>
+            <div class="big-sub" id="cpuModel">—</div>
+          </div>
+        </header>
+
+        <div class="detail-body">
+          <div class="chart-panel">
+            <div class="chart-frame"><canvas id="cpuChart"></canvas></div>
+          </div>
+          <aside class="stats-panel">
+            <div class="stat-row"><span>利用率</span><b id="stCpuUsage">--</b></div>
+            <div class="stat-row"><span>速度</span><b id="stCpuSpeed">--</b></div>
+            <div class="stat-row"><span>进程</span><b id="stCpuProcs">--</b></div>
+            <div class="stat-row"><span>线程</span><b id="stCpuThreads">--</b></div>
+            <div class="stat-row"><span>逻辑处理器</span><b id="stCpuLogical">--</b></div>
+            <div class="stat-row"><span>正常运行时间</span><b id="stCpuUptime">--</b></div>
+            <div class="stat-sep"></div>
+            <div class="stat-row"><span>插槽</span><b>1</b></div>
+            <div class="stat-row"><span>内核</span><b id="stCpuCores">--</b></div>
+          </aside>
+        </div>
+
+        <footer class="info-table">
+          <div class="wide"><span>处理器</span><b id="tblCpuModel">—</b></div>
+          <div><span>基准速度</span><b id="tblCpuBase">—</b></div>
+          <div><span>L2 缓存</span><b id="tblCpuL2">—</b></div>
+          <div><span>L3 缓存</span><b id="tblCpuL3">—</b></div>
+        </footer>
+      </section>
+
+      <!-- ============================= 内存 ============================= -->
+      <section class="view" data-view="mem" hidden>
+        <header class="detail-head">
+          <div class="head-main">
+            <h1 class="detail-title">内存</h1>
+            <div class="big-line"><span class="big-val" id="memPct">--</span><span class="big-cap">使用中</span></div>
+            <div class="big-sub" id="memSub">—</div>
+          </div>
+
+        </header>
+
+        <div class="detail-body">
+          <div class="chart-panel">
+            <div class="chart-frame"><canvas id="memChart"></canvas></div>
+            <div class="mem-bar" aria-hidden="true">
+              <span class="seg used" id="memBarUsed"></span>
+              <span class="seg cached" id="memBarCached"></span>
+              <span class="seg free" id="memBarFree"></span>
+            </div>
+          </div>
+          <aside class="stats-panel">
+            <div class="stat-row"><span>使用中</span><b id="stMemUsed">--</b></div>
+            <div class="stat-row"><span>可用</span><b id="stMemAvail">--</b></div>
+            <div class="stat-row"><span>已缓存</span><b id="stMemCached">--</b></div>
+            <div class="stat-row"><span>缓冲区</span><b id="stMemBuffers">--</b></div>
+            <div class="stat-row"><span>交换</span><b id="stMemSwap">--</b></div>
+            <div class="stat-sep"></div>
+            <div class="stat-row"><span>总容量</span><b id="stMemTotal">--</b></div>
+          </aside>
+        </div>
+
+        <footer class="info-table">
+          <div><span>使用中</span><b id="tblMemUsed">--</b></div>
+          <div><span>可用</span><b id="tblMemAvail">--</b></div>
+          <div><span>已缓存</span><b id="tblMemCached">--</b></div>
+          <div><span>交换</span><b id="tblMemSwap">--</b></div>
+        </footer>
+      </section>
+
+      <!-- ============================= 磁盘 ============================= -->
+      <section class="view" data-view="disk" hidden>
+        <header class="detail-head">
+          <div class="head-main">
+            <h1 class="detail-title" id="diskTitle">磁盘</h1>
+            <div class="big-line disk-big-line">
+              <span class="disk-big-item read"><span class="big-val" id="diskRead">--</span><span class="big-cap">读取速度</span></span>
+              <span class="disk-big-item write"><span class="big-val" id="diskWrite">--</span><span class="big-cap">写入速度</span></span>
+            </div>
+            <div class="big-sub" id="diskSub">—</div>
+          </div>
+          <div class="head-side legend"><i class="dot write"></i>写入<i class="dot read"></i>读取</div>
+        </header>
+
+        <div class="detail-body">
+          <div class="chart-panel">
+            <div class="chart-frame"><canvas id="diskChart"></canvas></div>
+          </div>
+          <aside class="stats-panel">
+            <div class="stat-row"><span>写入速度</span><b id="stDiskWrite">--</b></div>
+            <div class="stat-row"><span>读取速度</span><b id="stDiskRead">--</b></div>
+            <div class="stat-row"><span>活动时间占比</span><b id="stDiskBusy">--</b></div>
+            <div class="stat-row"><span>平均响应时间</span><b id="stDiskLatency">--</b></div>
+            <div class="stat-row"><span>IOPS</span><b id="stDiskIops">--</b></div>
+            <div class="stat-sep"></div>
+            <div class="stat-row"><span>容量</span><b id="stDiskCap">--</b></div>
+            <div class="stat-row"><span>挂载点</span><b id="stDiskMount" class="mount">--</b></div>
+          </aside>
+        </div>
+
+        <footer class="info-table">
+          <div><span>设备</span><b id="tblDiskDev">--</b></div>
+          <div><span>型号</span><b id="tblDiskModel">--</b></div>
+          <div><span>类型</span><b id="tblDiskType">--</b></div>
+          <div><span>状态</span><b id="tblDiskState">--</b></div>
+        </footer>
+      </section>
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span class="live-dot" id="liveDot"></span>
+    <span id="liveText">正在连接…</span>
+    <span class="sep">·</span>
+    <span>采样间隔 <b id="sampleText">1.0 秒</b></span>
+    <span class="sep">·</span>
+    <span id="hostText">—</span>
+    <span class="spacer"></span>
+    <span class="src" id="footerBrief">网速 -- · CPU -- · 已启动 --</span>
+  </footer>
+</div>
+
+<div class="tooltip" id="tooltip" hidden></div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

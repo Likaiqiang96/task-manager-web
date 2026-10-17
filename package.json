@@ -1,0 +1,14 @@
+{
+  "name": "win11-task-manager-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "仿 Windows 11 资源管理器 / 任务管理器的本机监控网页（磁盘健康、跨盘传输动画、CPU / 内存 / 磁盘速率）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
