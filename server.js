@@ -1359,6 +1359,123 @@ const TYPE_LABELS = { phone: '手机', tablet: '平板', computer: '电脑', dev
 const remoteConnPrev = new Map();
 const remoteConnSeen = new Map();
 const remoteGroups = new Map();
+const CLI_DOWNLOAD_RE = /^(curl|wget)$/i;
+const cliDownloadPrev = new Map();
+let cliDownloadAt = 0;
+
+function scanCliDownloads(now) {
+  const downloads = [];
+  const dt = cliDownloadAt ? Math.max((now - cliDownloadAt) / 1000, 0.2) : 1;
+  cliDownloadAt = now;
+  let pids = [];
+  try {
+    pids = fs.readdirSync('/proc').filter((name) => /^\d+$/.test(name));
+  } catch {
+    pids = [];
+  }
+
+  for (const pid of pids) {
+    const comm = readText(`/proc/${pid}/comm`).trim();
+    if (!CLI_DOWNLOAD_RE.test(comm)) continue;
+    const rawCmd = readText(`/proc/${pid}/cmdline`);
+    const cmd = rawCmd ? rawCmd.split('\0').filter(Boolean).join(' ') : '';
+    if (!/(https?:|ftp:)/i.test(cmd)) continue;
+
+    let filePath = null;
+    try {
+      for (const fd of fs.readdirSync(`/proc/${pid}/fd`)) {
+        let link = '';
+        try {
+          link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`);
+        } catch {
+          continue;
+        }
+        if (!link || !link.startsWith('/') || link.includes(' (deleted)')) continue;
+        const info = readText(`/proc/${pid}/fdinfo/${fd}`);
+        const flags = /^flags:\s*(\d+)/m.exec(info);
+        const mode = flags ? parseInt(flags[1], 8) & 3 : 0;
+        if (mode !== 1 && mode !== 2) continue;
+        let st;
+        try {
+          st = fs.statSync(link);
+        } catch {
+          continue;
+        }
+        if (!st.isFile() || st.size <= 0) continue;
+        filePath = link;
+        break;
+      }
+    } catch {
+      continue;
+    }
+    if (!filePath) continue;
+    const disk = findDiskForPath(filePath);
+    if (!disk) continue;
+    let size = 0;
+    try {
+      size = fs.statSync(filePath).size;
+    } catch {
+      continue;
+    }
+    const prev = cliDownloadPrev.get(pid);
+    const bps = prev && size >= prev.size
+      ? Math.round((size - prev.size) / dt)
+      : 0;
+    cliDownloadPrev.set(pid, { size, at: now });
+    const urlMatch = /(https?:\/\/[^\s'"]+)/i.exec(cmd);
+    const url = urlMatch ? urlMatch[1] : '';
+    let host = '';
+    try {
+      host = url ? new URL(url).host : '';
+    } catch {
+      host = '';
+    }
+    downloads.push({
+      pid: Number(pid),
+      name: comm,
+      file: path.basename(filePath),
+      path: filePath,
+      disk,
+      host,
+      size,
+      bps,
+      active: true,
+      at: now,
+    });
+  }
+
+  const alive = new Set(downloads.map((item) => String(item.pid)));
+  for (const pid of cliDownloadPrev.keys()) {
+    if (!alive.has(pid)) cliDownloadPrev.delete(pid);
+  }
+  return downloads;
+}
+
+const jellyfinClients = new Map();
+let jellyfinClientAt = 0;
+
+async function scanJellyfinClients() {
+  const now = Date.now();
+  if (now - jellyfinClientAt < 2000) return;
+  jellyfinClientAt = now;
+  const names = [...containerFileTransfers.keys()].filter((name) => /jellyfin/i.test(name));
+  for (const name of names) {
+    const out = await runCommand('docker', ['exec', name, 'cat', '/proc/net/tcp'], 4000);
+    const clients = new Set();
+    for (const line of String(out || '').split('\n')) {
+      const m = /^\s*\d+:\s+([0-9A-Fa-f]+):([0-9A-Fa-f]+)\s+([0-9A-Fa-f]+):([0-9A-Fa-f]+)\s+01\b/.exec(line);
+      if (!m) continue;
+      if (parseInt(m[2], 16) !== 8096) continue;
+      const remoteHex = m[3];
+      if (!remoteHex || remoteHex === '00000000') continue;
+      const ip = remoteHex.match(/../g).reverse().map((part) => parseInt(part, 16)).join('.');
+      if (!ip || ip.startsWith('127.') || ip === '0.0.0.0') continue;
+      clients.add(ip);
+    }
+    jellyfinClients.set(name, [...clients]);
+  }
+}
+
 const containerFileTransfers = new Map();
 const fileServiceDiskCache = new Map();
 const FILE_SERVICE_DISK_FILE = path.join(__dirname, 'data', 'file-service-disks.json');
@@ -1560,12 +1677,13 @@ async function scanFileServiceOpenFiles() {
   if (!names.length) return;
   fileServiceOpenBusy = true;
   try {
-    const name = names[0];
-    const mounts = await getContainerMounts(name);
-    const share = mounts.find((m) => m.Destination && m.Source);
-    if (!share) return;
+    for (const name of names) {
+      const state = fileServiceOpenState;
+      const mounts = await getContainerMounts(name);
+      const shares = mounts.filter((m) => m.Destination && m.Source);
+      if (!shares.length) continue;
 
-    const script = `
+      const script = `
 dest="$1"
 for f in /proc/[0-9]*/fd/*; do
   t=$(readlink "$f" 2>/dev/null) || continue
@@ -1578,42 +1696,70 @@ for f in /proc/[0-9]*/fd/*; do
   echo "$f|$t|$flags"
 done
 `;
-    const stdout = await runCommand('docker', ['exec', name, 'sh', '-c', script, 'sh', share.Destination], 5000);
-    const files = [];
-    for (const line of stdout.split('\n')) {
-      if (!line.trim()) continue;
-      const [fd, containerPath, flagsText] = line.split('|');
-      if (!containerPath || !containerPath.startsWith(share.Destination + '/')) continue;
-      if (containerPath.startsWith(share.Destination + '/data/')) continue; // OpenList 自身数据/配置
-      const flags = parseInt(flagsText, 8);
-      const mode = Number.isFinite(flags) ? flags & 3 : 0;
-      if (mode !== 0) continue; // 只看只读打开的源文件
-      const hostPath = share.Source + containerPath.slice(share.Destination.length);
-      const disk = findDiskForPath(hostPath);
-      if (!disk || disk === 'sdb') continue; // 系统盘不作为媒体源
-      const relative = hostPath.startsWith(share.Source + '/')
-        ? hostPath.slice(share.Source.length + 1)
-        : hostPath;
-      files.push({ fd, hostPath, disk, relative });
-    }
-
-    if (files.length) {
-      const counts = new Map();
-      for (const f of files) counts.set(f.disk, (counts.get(f.disk) || 0) + 1);
-      const cached = fileServiceDiskCache.get(name);
-      let disk = cached && counts.has(cached) ? cached : null;
-      if (!disk) {
-        let best = 0;
-        for (const [d, c] of counts) {
-          if (c > best) { best = c; disk = d; }
+      const files = [];
+      for (const share of shares) {
+        const stdout = await runCommand('docker', ['exec', name, 'sh', '-c', script, 'sh', share.Destination], 5000);
+        for (const line of String(stdout || '').split('\n')) {
+          if (!line.trim()) continue;
+          const [fd, containerPath, flagsText] = line.split('|');
+          if (!containerPath || !containerPath.startsWith(share.Destination + '/')) continue;
+          if (containerPath.startsWith(share.Destination + '/data/')) continue; // OpenList 自身数据/配置
+          const flags = parseInt(flagsText, 8);
+          const mode = Number.isFinite(flags) ? flags & 3 : 0;
+          if (mode !== 0) continue; // 只看只读打开的源文件
+          const hostPath = share.Source + containerPath.slice(share.Destination.length);
+          const disk = findDiskForPath(hostPath);
+          if (!disk || disk === 'sdb') continue; // 系统盘不作为媒体源
+          const relative = hostPath.startsWith(share.Source + '/')
+            ? hostPath.slice(share.Source.length + 1)
+            : hostPath;
+          files.push({ fd, hostPath, disk, relative });
         }
       }
-      const selected = files.find((f) => f.disk === disk) || files[0];
-      fileServiceOpenState.at = Date.now();
-      fileServiceOpenState.container = name;
-      fileServiceOpenState.disk = selected.disk;
-      fileServiceOpenState.file = selected.relative;
-      fileServiceOpenState.files = files.slice(0, 8);
+
+      // Jellyfin 的媒体文件通常由 ffmpeg 子进程短暂打开，fd 扫描容易错过；
+      // 回退到 Jellyfin 日志里最近一次播放的 file:"..." 路径。
+      if (/jellyfin/i.test(name) && !files.length) {
+        const logOut = await runCommand(
+          'docker',
+          ['exec', name, 'sh', '-c', "grep -ho 'file:[^ ]*' /config/log/log_*.log 2>/dev/null | tail -3"],
+          5000
+        );
+        const paths = [...String(logOut || '').matchAll(/file:\\?"([^"\\]+)\\?"/g)]
+          .map((m) => m[1])
+          .reverse();
+        for (const containerPath of paths) {
+          const share = shares.find((m) => containerPath.startsWith(m.Destination + '/'));
+          if (!share) continue;
+          const hostPath = share.Source + containerPath.slice(share.Destination.length);
+          const disk = findDiskForPath(hostPath);
+          if (!disk || disk === 'sdb') continue;
+          const relative = hostPath.startsWith(share.Source + '/')
+            ? hostPath.slice(share.Source.length + 1)
+            : hostPath;
+          files.push({ fd: 'log', hostPath, disk, relative });
+          break;
+        }
+      }
+
+      if (files.length) {
+        const counts = new Map();
+        for (const f of files) counts.set(f.disk, (counts.get(f.disk) || 0) + 1);
+        const cached = fileServiceDiskCache.get(name);
+        let disk = cached && counts.has(cached) ? cached : null;
+        if (!disk) {
+          let best = 0;
+          for (const [d, c] of counts) {
+            if (c > best) { best = c; disk = d; }
+          }
+        }
+        const selected = files.find((f) => f.disk === disk) || files[0];
+        state.at = Date.now();
+        state.container = name;
+        state.disk = selected.disk;
+        state.file = selected.relative;
+        state.files = files.slice(0, 8);
+      }
     }
   } catch (err) {
     console.error('[file-service-open]', err.message);
@@ -2118,6 +2264,44 @@ async function collectRemote() {
       });
     }
 
+    const jellyfinItems = [...containerFileTransfers.values()].filter(
+      (item) => /jellyfin/i.test(item.name) && now - item.lastActive < 10000
+    );
+    for (const item of jellyfinItems) {
+      const clients = jellyfinClients.get(item.name) || [];
+      const open = fileServiceOpenState.container === item.name &&
+        now - fileServiceOpenState.at < 8000
+        ? fileServiceOpenState
+        : null;
+      const disk = open && open.disk ? open.disk : item.disk || null;
+      const file = open && open.file ? open.file : '';
+      devices.push({
+        id: `container:${item.name}`,
+        ip: clients[0] || 'docker',
+        ipLabel: clients[0] || 'Docker 网络',
+        name: clients[0] || item.app || 'Jellyfin',
+        vendor: 'Jellyfin 客户端',
+        type: 'container',
+        typeLabel: '媒体服务',
+        services: ['Jellyfin'],
+        connections: clients.length || 1,
+        downloadBps: Math.round(Math.max(item.sendBps || 0, item.lastSend || 0)),
+        uploadBps: Math.round(Math.max(item.recvBps || 0, item.lastRecv || 0)),
+        active: true,
+        disk,
+        readDisk: disk,
+        writeDisk: null,
+        readFile: file,
+        writeFile: '',
+        clients,
+        lastSeen: now,
+      });
+    }
+
+    if (jellyfinItems.length && now - fileServiceOpenState.at > 2000) {
+      scanFileServiceOpenFiles().catch(() => {});
+    }
+
     devices.sort((a, b) => {
       if (a.active !== b.active) return a.active ? -1 : 1;
       return b.downloadBps + b.uploadBps - (a.downloadBps + a.uploadBps);
@@ -2165,6 +2349,7 @@ async function collectRemote() {
     let fileServiceFile = '';
     for (const item of containerFileTransfers.values()) {
       if (now - item.lastActive > 10000) continue;
+      if (/jellyfin/i.test(item.name)) continue;
       fileServiceActive = true;
       if (!fileServiceName) fileServiceName = item.app;
       fileServiceSend += item.sendBps || 0;
@@ -2199,6 +2384,16 @@ async function collectRemote() {
       }
     }
 
+    scanJellyfinClients().catch(() => {});
+    const cliDownloads = scanCliDownloads(now);
+    const cliActive = cliDownloads.length > 0;
+    if (cliActive) {
+      extActive = true;
+      extDownload += cliDownloads.reduce((sum, item) => sum + (item.bps || 0), 0);
+      if (!extDisk) extDisk = cliDownloads[0].disk;
+      extPeers = [...new Set([...extPeers, ...cliDownloads.map((item) => item.host).filter(Boolean)])].slice(0, 5);
+    }
+
     remoteSnapshot = {
       at: now,
       devices: devices.slice(0, 8),
@@ -2216,6 +2411,13 @@ async function collectRemote() {
         fileService: fileServiceActive,
         fileServiceName: fileServiceActive ? fileServiceName : '',
         fileServiceFile: fileServiceActive ? fileServiceFile : '',
+        cliDownload: cliActive,
+        cliName: cliActive ? cliDownloads[0].name : '',
+        cliFile: cliActive ? cliDownloads[0].file : '',
+        cliHost: cliActive ? cliDownloads[0].host : '',
+        cliDisk: cliActive ? cliDownloads[0].disk : '',
+        cliBps: cliActive ? cliDownloads.reduce((sum, item) => sum + (item.bps || 0), 0) : 0,
+        cliDownloads: cliActive ? cliDownloads : [],
         lastSeen: Math.max(external.lastSeen || 0, aria2Active ? aria2State.lastActive : 0),
       },
     };
@@ -2884,7 +3086,7 @@ async function collectNetwork() {
       const sendBps = Math.max(0, (tx - base.tx) / span);
       containerNetHistory.set(name, history);
 
-      if (/openlist|filebrowser|kodbox|alist/i.test(name) && recvBps + sendBps >= 64 * 1024) {
+      if (/openlist|filebrowser|kodbox|alist|jellyfin/i.test(name) && recvBps + sendBps >= 64 * 1024) {
         const previous = containerFileTransfers.get(name);
         containerFileTransfers.set(name, {
           name,

@@ -1270,14 +1270,26 @@ function updateDiskServiceTags() {
   const external = state.remote && state.remote.external;
   const service = external && external.active && external.fileService ? external.fileServiceName : '';
   const disk = external && external.active && external.fileService ? external.disk : '';
+  const jellyfin = ((state.remote && state.remote.devices) || []).filter(
+    (device) => device.active && (device.services || []).includes('Jellyfin') && device.readDisk
+  );
   for (const [name, card] of state.cards) {
     const tag = card.querySelector('.disk-service-tag');
     if (!tag) continue;
-    const active = Boolean(service && disk === name);
+    const jf = jellyfin.find((device) => device.readDisk === name);
+    const extActive = Boolean(service && disk === name);
+    const active = extActive || Boolean(jf);
+    const label = jf ? 'Jellyfin' : service;
     tag.hidden = !active;
-    tag.textContent = active ? service : '';
-    const file = external && external.fileServiceFile ? `（${external.fileServiceFile}）` : '';
-    tag.title = active ? `${service} 文件服务正在使用此磁盘${file}` : '';
+    tag.textContent = active ? label : '';
+    const file = extActive
+      ? external.fileServiceFile
+        ? `（${external.fileServiceFile}）`
+        : ''
+      : jf && jf.readFile
+        ? `（${jf.readFile}）`
+        : '';
+    tag.title = active ? `${label} 正在使用此磁盘${file}` : '';
   }
 }
 
@@ -1769,16 +1781,33 @@ function updateTransferBar() {
       key: `smb-${device.id}`,
       file,
       from: device.readDisk || '远程设备',
-      to: device.writeDisk || '远程设备',
+      to: device.writeDisk || device.name || device.ip || '远程设备',
       bps: Math.max(device.downloadBps || 0, device.uploadBps || 0),
       active: true,
       lastSeen: Date.now(),
-      proc: `${device.name || device.ip} · SMB`,
+      proc: `${device.name || device.ip} · ${(device.services || []).includes('Jellyfin') ? 'Jellyfin' : 'SMB'}`,
       color: '#3ddc97',
       external: false,
     });
   }
   const external = state.remote && state.remote.external;
+  if (external && external.active && Array.isArray(external.cliDownloads)) {
+    for (const dl of external.cliDownloads) {
+      list.push({
+        id: `cli-${dl.pid}-${dl.file}`,
+        key: `cli-${dl.pid}-${dl.file}`,
+        file: dl.file || '外网下载',
+        from: '外网',
+        to: dl.disk || '磁盘',
+        bps: dl.bps || 0,
+        active: true,
+        lastSeen: Date.now(),
+        proc: `${dl.name || 'curl'} · ${dl.host || '外网'}`,
+        color: '#5b9dff',
+        external: true,
+      });
+    }
+  }
   if (external && external.active && external.fileService) {
     list.push({
       id: 'external-file-service',
@@ -2056,9 +2085,10 @@ function drawRemoteTransfers(ctx, origin, width, height, now) {
     if (disk && globe) {
       const aria2 = Boolean(external.aria2);
       const fileService = Boolean(external.fileService);
+      const cliDownload = Boolean(external.cliDownload);
       const download = external.downloadBps >= external.uploadBps;
-      // 文件服务（OpenList）是「本机磁盘 → 外网」上传；aria2 是「外网 → 本机磁盘」下载
-      const intoDisk = fileService ? false : aria2 ? download : !download;
+      // 文件服务（OpenList）是「本机磁盘 → 外网」上传；aria2 / curl / wget 是「外网 → 本机磁盘」下载
+      const intoDisk = fileService ? false : aria2 || cliDownload ? download : !download;
       drawTransferCurve(
         ctx,
         {
@@ -2381,7 +2411,11 @@ function renderRemote() {
 
   const globeSource = $('#globeSource');
   if (globeSource) {
-    globeSource.textContent = external.aria2 ? external.aria2Name || 'aria2' : '';
+    globeSource.textContent = external.aria2
+      ? external.aria2Name || 'aria2'
+      : external.cliDownload
+        ? external.cliName || 'curl'
+        : '';
   }
 
   const globeActive = Boolean(external.active);
@@ -2394,7 +2428,7 @@ function renderRemote() {
         ? '↓ 下载'
         : '↑ 上传';
     const diskText = external.disk
-      ? external.aria2 || external.fileService
+      ? external.aria2 || external.fileService || external.cliDownload
         ? external.disk
         : diskLabel(external.disk)
       : '';
@@ -2420,6 +2454,14 @@ function renderRemote() {
   }
   if (external.fileServiceFile) {
     titleParts.push(`文件：${external.fileServiceFile}`);
+  }
+  if (external.cliDownload) {
+    titleParts.push(`外网下载：${external.cliName || 'curl'}`);
+    if (external.cliFile) titleParts.push(`文件：${external.cliFile}`);
+    if (external.cliHost) titleParts.push(`来源：${external.cliHost}`);
+    if ((external.cliDownloads || []).length > 1) {
+      titleParts.push(`共 ${external.cliDownloads.length} 个下载`);
+    }
   }
   globe.title = titleParts.join('\n');
   updateDiskServiceTags();
