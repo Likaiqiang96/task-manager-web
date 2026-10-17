@@ -1270,19 +1270,12 @@ function updateDiskServiceTags() {
   const external = state.remote && state.remote.external;
   const service = external && external.active && external.fileService ? external.fileServiceName : '';
   const disk = external && external.active && external.fileService ? external.disk : '';
-  const mediaServices = [];
+  const media = [];
   for (const device of (state.remote && state.remote.devices) || []) {
-    if (!device.active) continue;
-    if (Array.isArray(device.streams) && device.streams.length) {
-      for (const stream of device.streams) {
-        if (!stream.disk) continue;
-        mediaServices.push({ name: stream.service, disk: stream.disk, file: stream.file || '' });
-      }
-    } else if (device.readDisk) {
-      for (const serviceName of device.services || []) {
-        if (serviceName !== 'OpenList' && serviceName !== 'Jellyfin') continue;
-        mediaServices.push({ name: serviceName, disk: device.readDisk, file: device.readFile || '' });
-      }
+    if (!device.active || !device.readDisk) continue;
+    for (const serviceName of device.services || []) {
+      if (serviceName !== 'OpenList' && serviceName !== 'Jellyfin') continue;
+      media.push({ name: serviceName, disk: device.readDisk, file: device.readFile || '' });
     }
   }
   for (const [name, card] of state.cards) {
@@ -1292,10 +1285,10 @@ function updateDiskServiceTags() {
     if (service && disk === name) {
       labels.push({ name: service, file: external.fileServiceFile || '' });
     }
-    for (const media of mediaServices) {
-      if (media.disk !== name) continue;
-      if (labels.some((item) => item.name === media.name)) continue;
-      labels.push({ name: media.name, file: media.file || '' });
+    for (const item of media) {
+      if (item.disk !== name) continue;
+      if (labels.some((entry) => entry.name === item.name)) continue;
+      labels.push(item);
     }
     box.innerHTML = labels
       .map((item) => {
@@ -2397,14 +2390,12 @@ function renderRemote() {
         } else {
           status = '已连接 · 等待传输';
         }
-        const meta = [
-          device.vendor,
-          device.typeLabel,
-          device.ipLabel,
-          ...(device.services || []),
-        ]
+        const meta = [device.vendor, device.typeLabel, device.ipLabel]
           .filter(Boolean)
           .join(' · ');
+        const serviceTags = (device.services || [])
+          .map((service) => `<span class="remote-service-tag">${escapeHtml(service)}</span>`)
+          .join('');
         const title = [
           device.hostname || device.ip,
           device.mac ? `MAC ${device.mac}` : '',
@@ -2424,6 +2415,7 @@ function renderRemote() {
           )}</span>
           <span class="remote-device-info">
             <span class="remote-device-name">${escapeHtml(device.name || device.ipLabel)}</span>
+            <span class="remote-service-tags">${serviceTags}</span>
             <span class="remote-device-meta">${escapeHtml(meta)}</span>
             <span class="remote-device-status">${escapeHtml(status)}</span>
             ${

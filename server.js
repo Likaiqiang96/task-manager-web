@@ -2325,31 +2325,6 @@ async function collectRemote() {
       });
     }
 
-    // 同一客户端 IP 的多个媒体流合并成一个设备，服务/文件分别保留
-    const mergedMedia = new Map();
-    for (const card of mediaCards) {
-      const key = card.ipLabel || card.name;
-      const existing = mergedMedia.get(key);
-      if (!existing) {
-        mergedMedia.set(key, card);
-        continue;
-      }
-      for (const service of card.services) {
-        if (!existing.services.includes(service)) existing.services.push(service);
-      }
-      existing.downloadBps += card.downloadBps;
-      existing.uploadBps += card.uploadBps;
-      existing.connections = Math.max(existing.connections, card.connections);
-      existing.streams = existing.streams.concat(card.streams);
-      if (!existing.readDisk && card.readDisk) {
-        existing.readDisk = card.readDisk;
-        existing.disk = card.readDisk;
-      }
-      if (!existing.readFile && card.readFile) existing.readFile = card.readFile;
-      existing.vendor = '媒体客户端';
-      existing.typeLabel = '媒体播放';
-    }
-    devices.push(...mergedMedia.values());
 
     if (mediaItems.length && now - fileServiceOpenState.at > 2000) {
       scanFileServiceOpenFiles().catch(() => {});
