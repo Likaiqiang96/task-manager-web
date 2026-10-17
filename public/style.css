@@ -2780,3 +2780,68 @@ body {
 #ovNetCard:hover {
   border-color: #4f6a7a;
 }
+
+
+/* CPU 总体 / 每逻辑处理器切换 */
+.cpu-head-side {
+  align-items: flex-end;
+  gap: 7px;
+}
+
+.segmented {
+  display: flex;
+  border: 1px solid #3d3d3d;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.segmented button {
+  padding: 4px 9px;
+  border: 0;
+  background: #2a2a2a;
+  color: #b8b8b8;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.segmented button + button {
+  border-left: 1px solid #3d3d3d;
+}
+
+.segmented button:hover {
+  background: #333;
+  color: #fff;
+}
+
+.segmented button.active {
+  background: #35505e;
+  color: #ffffff;
+}
+
+.cpu-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 9px;
+  max-width: 430px;
+}
+
+.cpu-legend[hidden] {
+  display: none;
+}
+
+.cpu-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #9a9a9a;
+  font-size: 10px;
+}
+
+.cpu-legend-item i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}

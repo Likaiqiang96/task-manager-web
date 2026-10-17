@@ -17,6 +17,7 @@
     samples: [],
     networkSeries: [],
     view: 'overview',
+    cpuMode: 'total',
     diskName: null,
     diskSig: '',
     diskRows: [],
@@ -208,6 +209,12 @@
           : new Array(this.opts.window - rest.length).fill(null).concat(rest);
       });
       this.scaleMax = this.computeScale();
+      this.draw();
+    }
+
+    setSeries(series) {
+      this.opts.series = series;
+      this.data = series.map(() => []);
       this.draw();
     }
 
@@ -438,6 +445,73 @@
       payload.x,
       payload.y
     );
+  }
+
+  const CPU_CORE_COLORS = ['#4cc2ff', '#3ddc97', '#f0b24a', '#b48ee6', '#ff6b6b', '#6fd3e8', '#c7d36f', '#e89ad0'];
+
+  function cpuCoreColor(index) {
+    return CPU_CORE_COLORS[index % CPU_CORE_COLORS.length];
+  }
+
+  function cpuCoresTooltip(payload) {
+    if (!payload) return hideTooltip();
+    const rows = payload.values.map((value, index) => ({
+      color: cpuCoreColor(index),
+      label: `逻辑处理器 ${index}`,
+      value: value == null ? '—' : pct(value),
+    }));
+    showTooltip(timeLabel(payload.index), rows, payload.x, payload.y);
+  }
+
+  function renderCpuLegend(count) {
+    const el = $('#cpuLegend');
+    if (!el) return;
+    if (!count) {
+      el.hidden = true;
+      el.innerHTML = '';
+      return;
+    }
+    el.hidden = false;
+    el.innerHTML = Array.from(
+      { length: count },
+      (_, index) =>
+        `<span class="cpu-legend-item"><i style="background:${cpuCoreColor(index)}"></i>CPU ${index}</span>`
+    ).join('');
+  }
+
+  function updateCpuPerformance(last, cpuSeries) {
+    const cores = (last.cpu && last.cpu.perCore) || [];
+    if (state.cpuMode === 'cores' && cores.length) {
+      const series = cores.map((_, index) => ({
+        color: cpuCoreColor(index),
+        fill: false,
+        width: 1.35,
+      }));
+      const data = cores.map((_, index) =>
+        pad60(state.samples.map((sample) => sample.cpu.perCore?.[index] ?? null))
+      );
+      if (charts.cpu) {
+        charts.cpu.setSeries(series);
+        charts.cpu.opts.tooltip = cpuCoresTooltip;
+        charts.cpu.setData(data);
+      }
+      renderCpuLegend(cores.length);
+    } else {
+      if (charts.cpu) {
+        charts.cpu.setSeries([{ color: COLORS.cpu, fill: true, width: 1.6 }]);
+        charts.cpu.opts.tooltip = cpuTooltip;
+        charts.cpu.setData([cpuSeries]);
+      }
+      renderCpuLegend(0);
+    }
+  }
+
+  function setCpuMode(mode) {
+    state.cpuMode = mode === 'cores' ? 'cores' : 'total';
+    $$('#cpuModeToggle [data-cpu-mode]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.cpuMode === state.cpuMode);
+    });
+    render();
   }
 
   function memTooltip(payload) {
@@ -786,7 +860,7 @@
     charts.ovMem.setData([memSeries]);
     charts.ovDisk.setData([writeSeries, readSeries]);
 
-    charts.cpu.setData([cpuSeries]);
+    updateCpuPerformance(last, cpuSeries);
     charts.mem.setData([memSeries]);
 
     /* 侧边栏 */
@@ -2942,6 +3016,10 @@ async function loadProcesses() {
           toast('这个页面暂未实现');
         }
       });
+    });
+
+    $$('#cpuModeToggle [data-cpu-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => setCpuMode(btn.dataset.cpuMode));
     });
 
     const treeRows = $('#treeRows');

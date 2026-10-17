@@ -399,6 +399,13 @@
             <div class="big-line"><span class="big-val" id="cpuPct">--</span><span class="big-speed" id="cpuSpeedInline">--</span></div>
             <div class="big-sub" id="cpuModel">—</div>
           </div>
+          <div class="head-side cpu-head-side">
+            <div class="segmented" id="cpuModeToggle" role="group" aria-label="CPU 显示模式">
+              <button type="button" data-cpu-mode="total" class="active">总体利用率</button>
+              <button type="button" data-cpu-mode="cores">逻辑处理器</button>
+            </div>
+            <div class="cpu-legend" id="cpuLegend" hidden></div>
+          </div>
         </header>
 
         <div class="detail-body">
