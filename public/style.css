@@ -1882,13 +1882,13 @@ body {
 }
 
 .process-table {
-  min-width: 900px;
+  min-width: 1020px;
 }
 
 .process-row {
   display: grid;
   grid-template-columns:
-    minmax(200px, 2.4fr) 76px 64px 120px 160px 140px 60px 100px;
+    minmax(200px, 2.4fr) 76px 64px 120px 160px 96px 96px 60px 100px;
   align-items: center;
   gap: 8px;
   min-height: 30px;

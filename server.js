@@ -1402,6 +1402,17 @@ function collectProcesses(now) {
       cpuPct = (delta / HZ / dt / CPU_COUNT) * 100;
     }
     procCpuPrev.set(pid, { ticks, starttime: stat.starttime });
+    const io = readProcessIo(pid);
+    let readBps = 0;
+    let writeBps = 0;
+    if (io) {
+      const prevIo = procDiskPrev.get(pid);
+      if (prevIo) {
+        readBps = Math.max(0, (io.read - prevIo.read) / dt);
+        writeBps = Math.max(0, (io.write - prevIo.write) / dt);
+      }
+      procDiskPrev.set(pid, { read: io.read, write: io.write });
+    }
     all.push({
       pid: Number(pid),
       name: stat.name,
@@ -1413,8 +1424,8 @@ function collectProcesses(now) {
       uid: null,
       user: '',
       cmd: '',
-      readBps: 0,
-      writeBps: 0,
+      readBps,
+      writeBps,
     });
   }
 
@@ -1426,7 +1437,7 @@ function collectProcesses(now) {
   const mem = readMem();
   const totalMem = mem.total || 1;
 
-  // 取 CPU 占用最高的 60 个 + 内存最高的 60 个，取并集
+  // 取 CPU / 内存 / 磁盘读 / 磁盘写最高的各 60 个，取并集
   const selected = new Map();
   for (const proc of [...all].sort((a, b) => b.cpuPct - a.cpuPct).slice(0, 60)) {
     selected.set(proc.pid, proc);
@@ -1434,11 +1445,16 @@ function collectProcesses(now) {
   for (const proc of [...all].sort((a, b) => b.rssBytes - a.rssBytes).slice(0, 60)) {
     selected.set(proc.pid, proc);
   }
+  for (const proc of [...all].sort((a, b) => b.readBps - a.readBps).slice(0, 60)) {
+    selected.set(proc.pid, proc);
+  }
+  for (const proc of [...all].sort((a, b) => b.writeBps - a.writeBps).slice(0, 60)) {
+    selected.set(proc.pid, proc);
+  }
 
   loadUserMap();
-  const keep = new Set(selected.keys());
   for (const pid of procDiskPrev.keys()) {
-    if (!keep.has(pid)) procDiskPrev.delete(pid);
+    if (!alive.has(pid)) procDiskPrev.delete(pid);
   }
 
   for (const proc of selected.values()) {
@@ -1471,16 +1487,6 @@ function collectProcesses(now) {
       }
     }
     proc.displayName = displayName;
-
-    const io = readProcessIo(proc.pid);
-    if (io) {
-      const prev = procDiskPrev.get(proc.pid);
-      if (prev) {
-        proc.readBps = Math.max(0, (io.read - prev.read) / dt);
-        proc.writeBps = Math.max(0, (io.write - prev.write) / dt);
-      }
-      procDiskPrev.set(proc.pid, { read: io.read, write: io.write });
-    }
 
     proc.cpuPct = round(proc.cpuPct, 1);
     proc.memPct = round(proc.memPct, 1);
@@ -2305,6 +2311,149 @@ function pickRemoteDisk(mode, exclude = null, minRate = 0) {
   return best.rate > 0 ? best.name : null;
 }
 
+const qbittorrentState = {
+  at: 0,
+  active: false,
+  speed: 0,
+  upload: 0,
+  lastSpeed: 0,
+  lastUpload: 0,
+  lastActive: 0,
+  lastDisk: null,
+  disk: null,
+  peers: [],
+  title: '',
+  files: [],
+  torrents: [],
+  numActive: 0,
+};
+
+const QBIT_URL = process.env.QBIT_URL || 'http://127.0.0.1:8080';
+const QBIT_USER = process.env.QBIT_USER || 'admin';
+const QBIT_PASS = process.env.QBIT_PASS || 'adminadmin';
+let qbCookie = '';
+let qbCookieAt = 0;
+let qbBusy = false;
+let qbMounts = null;
+let qbMountsAt = 0;
+
+async function qbFetch(path, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    return await fetch(`${QBIT_URL}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: { ...(options.headers || {}), Cookie: qbCookie },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function ensureQbCookie() {
+  if (qbCookie && Date.now() - qbCookieAt < 30 * 60 * 1000) return true;
+  const response = await fetch(`${QBIT_URL}/api/v2/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ username: QBIT_USER, password: QBIT_PASS }).toString(),
+    signal: AbortSignal.timeout(4000),
+  });
+  if (!response.ok) return false;
+  const cookie = response.headers.get('set-cookie') || '';
+  const sid = cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('SID='));
+  if (!sid) return false;
+  qbCookie = sid;
+  qbCookieAt = Date.now();
+  return true;
+}
+
+async function qbGetMounts() {
+  if (qbMounts && Date.now() - qbMountsAt < 60000) return qbMounts;
+  const text = await runCommand('docker', ['inspect', '--format', '{{json .Mounts}}', 'qbittorrent'], 4000);
+  try {
+    qbMounts = JSON.parse(String(text || '').trim() || '[]');
+  } catch {
+    qbMounts = [];
+  }
+  qbMountsAt = Date.now();
+  return qbMounts;
+}
+
+async function collectQbittorrent() {
+  if (qbBusy) return;
+  qbBusy = true;
+  const now = Date.now();
+  try {
+    if (!(await ensureQbCookie())) {
+      qbittorrentState.at = now;
+      qbittorrentState.active = now - qbittorrentState.lastActive < REMOTE_ACTIVE_GRACE_MS;
+      return;
+    }
+    const [torrentsRes, transferRes, mounts] = await Promise.all([
+      qbFetch('/api/v2/torrents/info'),
+      qbFetch('/api/v2/transfer/info'),
+      qbGetMounts(),
+    ]);
+    if (torrentsRes.status === 403) {
+      qbCookie = '';
+      return;
+    }
+    const torrents = await torrentsRes.json();
+    const transfer = await transferRes.json();
+    const list = Array.isArray(torrents) ? torrents : [];
+    const files = [];
+    let disk = null;
+    let title = '';
+    for (const torrent of list) {
+      const activeTorrent = (torrent.dlspeed || 0) + (torrent.upspeed || 0) > 0 ||
+        /downloading|uploading|stalled|checking|moving/i.test(torrent.state || '');
+      if (!activeTorrent) continue;
+      const containerPath = torrent.content_path || torrent.save_path || '';
+      const hostPath = containerPathToHost(containerPath, mounts);
+      const diskName = findDiskForPath(hostPath);
+      if (!disk && diskName && diskName !== 'sdb') disk = diskName;
+      if (!title) title = torrent.name || torrent.content_path || '';
+      files.push({
+        hash: torrent.hash,
+        name: torrent.name || '',
+        file: torrent.content_path ? torrent.content_path.split('/').pop() : torrent.name || '',
+        disk: diskName && diskName !== 'sdb' ? diskName : '',
+        dlspeed: Math.round(torrent.dlspeed || 0),
+        upspeed: Math.round(torrent.upspeed || 0),
+        size: torrent.size || 0,
+        progress: torrent.progress || 0,
+        state: torrent.state || '',
+      });
+    }
+    const speed = Math.max(0, Number(transfer.dl_info_speed) || 0);
+    const upload = Math.max(0, Number(transfer.up_info_speed) || 0);
+    const activeNow = list.some((t) => (t.dlspeed || 0) + (t.upspeed || 0) > 0);
+    if (activeNow) {
+      qbittorrentState.lastActive = now;
+      qbittorrentState.lastSpeed = speed;
+      qbittorrentState.lastUpload = upload;
+      qbittorrentState.lastDisk = disk || qbittorrentState.lastDisk;
+    }
+    const grace = now - qbittorrentState.lastActive < REMOTE_ACTIVE_GRACE_MS;
+    qbittorrentState.at = now;
+    qbittorrentState.active = activeNow || grace;
+    qbittorrentState.speed = activeNow ? speed : grace ? qbittorrentState.lastSpeed : 0;
+    qbittorrentState.upload = activeNow ? upload : grace ? qbittorrentState.lastUpload : 0;
+    qbittorrentState.disk = disk || qbittorrentState.lastDisk;
+    qbittorrentState.lastDisk = qbittorrentState.disk;
+    qbittorrentState.title = title;
+    qbittorrentState.files = files;
+    qbittorrentState.torrents = files;
+    qbittorrentState.numActive = list.filter((t) => (t.dlspeed || 0) + (t.upspeed || 0) > 0).length;
+  } catch {
+    qbittorrentState.at = now;
+    qbittorrentState.active = now - qbittorrentState.lastActive < REMOTE_ACTIVE_GRACE_MS;
+  } finally {
+    qbBusy = false;
+  }
+}
+
 async function collectRemote() {
   if (remoteBusy) return;
   remoteBusy = true;
@@ -2581,6 +2730,20 @@ async function collectRemote() {
       extPeers = [...new Set([...extPeers, ...(aria2State.peers || [])])].slice(0, 5);
     }
 
+    let qbittorrentActive = false;
+    if (
+      qbittorrentState.at &&
+      now - qbittorrentState.at < 3500 &&
+      qbittorrentState.active &&
+      now - qbittorrentState.lastActive < REMOTE_ACTIVE_GRACE_MS
+    ) {
+      qbittorrentActive = true;
+      extActive = true;
+      extDownload += Math.max(qbittorrentState.speed || 0, qbittorrentState.lastSpeed || 0);
+      extUpload += qbittorrentState.upload || 0;
+      if (!extDisk) extDisk = qbittorrentState.disk || qbittorrentState.lastDisk || pickRemoteDisk('write');
+    }
+
     let fileServiceActive = false;
     let fileServiceName = '';
     let fileServiceSend = 0;
@@ -2648,6 +2811,13 @@ async function collectRemote() {
         aria2Name: aria2Active ? aria2State.name : '',
         aria2Title: aria2Active ? aria2State.title : '',
         aria2Speed: aria2Active ? Math.round(aria2State.speed) : 0,
+        qbittorrent: qbittorrentActive,
+        qbTitle: qbittorrentActive ? qbittorrentState.title : '',
+        qbFiles: qbittorrentActive ? qbittorrentState.files : [],
+        qbTorrents: qbittorrentActive ? qbittorrentState.torrents : [],
+        qbDisk: qbittorrentActive ? qbittorrentState.disk : '',
+        qbDownloadBps: qbittorrentActive ? Math.round(qbittorrentState.speed) : 0,
+        qbUploadBps: qbittorrentActive ? Math.round(qbittorrentState.upload) : 0,
         fileService: fileServiceActive,
         fileServiceName: fileServiceActive ? fileServiceName : '',
         fileServiceFile: fileServiceActive ? fileServiceFile : '',
@@ -3753,6 +3923,9 @@ setInterval(() => collectRemote(), 500);
 
 setTimeout(() => collectAria2(), 2500);
 setInterval(() => collectAria2(), 1000);
+
+setTimeout(() => collectQbittorrent(), 2800);
+setInterval(() => collectQbittorrent(), 1000);
 
 setTimeout(() => collectUsers(), 1500);
 setInterval(() => collectUsers(), 5000);

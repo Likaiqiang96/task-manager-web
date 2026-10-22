@@ -1842,6 +1842,24 @@ function updateTransferBar() {
     });
   }
   const external = state.remote && state.remote.external;
+  if (external && external.active && Array.isArray(external.qbTorrents)) {
+    for (const torrent of external.qbTorrents) {
+      const uploading = (torrent.upspeed || 0) > (torrent.dlspeed || 0);
+      list.push({
+        id: `qb-${torrent.hash}`,
+        key: `qb-${torrent.hash}`,
+        file: torrent.file || torrent.name || 'qBittorrent',
+        from: uploading ? torrent.disk || '磁盘' : '外网',
+        to: uploading ? '外网' : torrent.disk || '磁盘',
+        bps: Math.max(torrent.dlspeed || 0, torrent.upspeed || 0),
+        active: true,
+        lastSeen: Date.now(),
+        proc: `qBittorrent · ${torrent.name || ''}`,
+        color: '#5b9dff',
+        external: true,
+      });
+    }
+  }
   if (external && external.active && Array.isArray(external.cliDownloads)) {
     for (const dl of external.cliDownloads) {
       list.push({
@@ -2137,9 +2155,10 @@ function drawRemoteTransfers(ctx, origin, width, height, now) {
       const aria2 = Boolean(external.aria2);
       const fileService = Boolean(external.fileService);
       const cliDownload = Boolean(external.cliDownload);
+      const qbittorrent = Boolean(external.qbittorrent);
       const download = external.downloadBps >= external.uploadBps;
-      // 文件服务（OpenList）是「本机磁盘 → 外网」上传；aria2 / curl / wget 是「外网 → 本机磁盘」下载
-      const intoDisk = fileService ? false : aria2 || cliDownload ? download : !download;
+      // 文件服务（OpenList）是「本机磁盘 → 外网」上传；aria2 / qBittorrent / curl / wget 是「外网 → 本机磁盘」下载
+      const intoDisk = fileService ? false : aria2 || qbittorrent || cliDownload ? download : !download;
       drawTransferCurve(
         ctx,
         {
@@ -2385,16 +2404,20 @@ function renderRemote() {
 
   countEl.textContent = devices.length
     ? `${devices.length} 台设备${activeCount ? ` · ${activeCount} 个传输中` : ''}${
-        external.aria2 ? ' · aria2 下载中' : ''
+        external.aria2 ? ' · aria2 下载中' : external.qbittorrent ? ' · qBittorrent 下载中' : ''
       }`
     : external.aria2
       ? 'aria2 下载中'
-      : '未检测到远程设备';
+      : external.qbittorrent
+        ? 'qBittorrent 下载中'
+        : '未检测到远程设备';
 
   if (!devices.length) {
     listEl.innerHTML = external.aria2
       ? '<span class="remote-empty">aria2 正在通过外部网络下载 · 见左侧地球与磁盘连线</span>'
-      : '<span class="remote-empty">暂无远程文件传输连接 · 手机 / 电脑通过 SMB、SFTP、OpenList 访问本机文件时会显示</span>';
+      : external.qbittorrent
+        ? '<span class="remote-empty">qBittorrent 正在通过外部网络下载 · 见左侧地球与磁盘连线</span>'
+        : '<span class="remote-empty">暂无远程文件传输连接 · 手机 / 电脑通过 SMB、SFTP、OpenList 访问本机文件时会显示</span>';
   } else {
     listEl.innerHTML = devices
       .map((device) => {
@@ -2463,9 +2486,11 @@ function renderRemote() {
   if (globeSource) {
     globeSource.textContent = external.aria2
       ? external.aria2Name || 'aria2'
-      : external.cliDownload
-        ? external.cliName || 'curl'
-        : '';
+      : external.qbittorrent
+        ? 'qBittorrent'
+        : external.cliDownload
+          ? external.cliName || 'curl'
+          : '';
   }
 
   const globeActive = Boolean(external.active);
@@ -2478,7 +2503,7 @@ function renderRemote() {
         ? '↓ 下载'
         : '↑ 上传';
     const diskText = external.disk
-      ? external.aria2 || external.fileService || external.cliDownload
+      ? external.aria2 || external.qbittorrent || external.fileService || external.cliDownload
         ? external.disk
         : diskLabel(external.disk)
       : '';
@@ -2498,6 +2523,11 @@ function renderRemote() {
   if (external.aria2) {
     titleParts.push(`aria2：${external.aria2Name || '下载中'}`);
     if (external.aria2Title) titleParts.push(external.aria2Title);
+  }
+  if (external.qbittorrent) {
+    titleParts.push(`qBittorrent：${external.qbTitle || '下载中'}`);
+    const qbFiles = (external.qbFiles || []).map((item) => item.file || item.name).filter(Boolean);
+    if (qbFiles.length) titleParts.push(`文件：${qbFiles.slice(0, 3).join(' / ')}`);
   }
   if (external.fileService) {
     titleParts.push(`文件服务：${external.fileServiceName || 'OpenList'}`);
@@ -2810,6 +2840,8 @@ function sortedProcesses() {
       diff = (a.displayName || a.name || '').localeCompare(b.displayName || b.name || '', 'zh-CN');
     } else if (key === 'mem') {
       diff = (a.rssBytes || 0) - (b.rssBytes || 0);
+    } else if (key === 'readBps' || key === 'writeBps') {
+      diff = (a[key] || 0) - (b[key] || 0);
     } else {
       diff = (a.cpuPct || 0) - (b.cpuPct || 0);
     }
@@ -2879,7 +2911,12 @@ function renderProcesses() {
           <span class="metric mem" title="${memTitle}"><i style="width:${memWidth.toFixed(
             1
           )}%"></i><b>${fmtBytes(proc.rssBytes)} · ${(proc.memPct || 0).toFixed(1)}%</b></span>
-          <span class="disk-cell">${processDiskText(proc)}</span>
+          <span class="disk-cell" title="磁盘读取 ${escapeHtml(fmtRate(proc.readBps || 0))}">${
+            proc.readBps > 0 ? `<span class="r">R ${fmtRate(proc.readBps)}</span>` : '—'
+          }</span>
+          <span class="disk-cell" title="磁盘写入 ${escapeHtml(fmtRate(proc.writeBps || 0))}">${
+            proc.writeBps > 0 ? `<span class="w">W ${fmtRate(proc.writeBps)}</span>` : '—'
+          }</span>
           <span class="threads-cell">${proc.threads}</span>
           <span class="user-cell">${escapeHtml(proc.user || '—')}</span>
         </div>`;
@@ -2898,6 +2935,10 @@ function renderProcesses() {
             ? 'CPU'
             : state.processSort.key === 'mem'
             ? '内存'
+            : state.processSort.key === 'readBps'
+            ? '磁盘读取'
+            : state.processSort.key === 'writeBps'
+            ? '磁盘写入'
             : '名称'
         }${state.processSort.dir === 'asc' ? '升序' : '降序'}`
       : '显示 CPU / 内存占用最高的进程'
